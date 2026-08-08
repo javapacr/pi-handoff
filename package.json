@@ -1,0 +1,44 @@
+{
+  "name": "pi-handoff",
+  "version": "0.1.0",
+  "description": "Context handoff for pi — transfer session context to a new focused session via LLM-generated prompts",
+  "keywords": [
+    "pi-package",
+    "pi",
+    "pi-coding-agent",
+    "handoff",
+    "session",
+    "context-transfer",
+    "ai",
+    "agents",
+    "cli"
+  ],
+  "license": "MIT",
+  "author": "javapacr",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/javapacr/pi-handoff.git"
+  },
+  "pi": {
+    "extensions": [
+      "./index.ts"
+    ]
+  },
+  "dependencies": {
+    "typebox": "^1.0.0"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-agent-core": "*",
+    "@earendil-works/pi-ai": "*",
+    "@earendil-works/pi-coding-agent": "*",
+    "@earendil-works/pi-tui": "*"
+  },
+  "devDependencies": {
+    "@earendil-works/pi-agent-core": ">=0.74.0",
+    "@earendil-works/pi-ai": ">=0.74.0",
+    "@earendil-works/pi-coding-agent": ">=0.74.0",
+    "@earendil-works/pi-tui": ">=0.74.0",
+    "typebox": "^1.0.0",
+    "typescript": "^5.0.0"
+  }
+}
