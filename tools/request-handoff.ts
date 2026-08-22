@@ -6,6 +6,9 @@
  * session itself because `execute()` handlers receive `ExtensionContext`, while
  * `newSession()` lives only on `ExtensionCommandContext` used by slash-command
  * handlers.
+ *
+ * Emits lifecycle events on the event bus so other extensions can react to
+ * handoff tool invocations.
  */
 
 import type {
@@ -13,7 +16,8 @@ import type {
 	ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
 import type { TuiFilledHandoffPayload } from "../domain/types";
-import { isTmuxSession } from "../infrastructure/tmux-client";
+import { resolveTerminalMode } from "../infrastructure/terminal-strategy";
+import { emitToolStart, emitToolEnd } from "../infrastructure/event-channels";
 
 export interface RequestHandoffDetails {
 	goal: string;
@@ -55,22 +59,36 @@ export function registerRequestHandoffTool(pi: ExtensionAPI): void {
 			ctx: ExtensionContext,
 		) {
 			const command = `/handoff ${params.goal}`;
+
+			// Emit lifecycle: tool started
+			emitToolStart(pi, { goal: params.goal, command });
+
 			ctx.ui.setEditorText(command);
 
-			// Notify the auto-submit listener. If running inside tmux, the
-			// listener will send Enter to the pane after the agent turn ends.
+			// Notify the auto-submit listener. If running inside a supported
+			// terminal multiplexer, the listener will send Enter to the pane
+			// after the agent turn ends.
 			pi.events.emit("tui_filled_handoff", {
 				goal: params.goal,
 				command,
 			} satisfies TuiFilledHandoffPayload);
 
+			const mode = resolveTerminalMode();
+			const autoSubmitLabel =
+				mode === "herdr"
+					? "auto-submitting via herdr…"
+					: mode === "tmux"
+						? "auto-submitting via tmux…"
+						: "Press Enter to run it.";
+
+			// Emit lifecycle: tool completed
+			emitToolEnd(pi, { goal: params.goal, command });
+
 			return {
 				content: [
 					{
 						type: "text" as const,
-						text: isTmuxSession()
-							? `Handoff command pre-filled and auto-submitting via tmux…`
-							: `Handoff command pre-filled in the input box. Press Enter to run it.`,
+						text: `Handoff command pre-filled in the input box. ${autoSubmitLabel}`,
 					},
 				],
 				details: {

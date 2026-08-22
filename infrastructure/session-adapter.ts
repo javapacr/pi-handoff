@@ -15,6 +15,8 @@ import {
 import type {
 	ContextUsage,
 	HandoffContext,
+	Task,
+	TaskDetails,
 	TodoDetails,
 } from "../domain/types";
 
@@ -65,19 +67,50 @@ export function getHandoffMessages(branch: SessionEntry[]): AgentMessage[] {
 		.filter((m): m is AgentMessage => m !== undefined);
 }
 
+/**
+ * Extract the todo/task list from the session branch.
+ *
+ * Handles both the built-in pi todo tool (`details.todos` with
+ * `{ id, text, done }`) and the rpiv-todo extension
+ * (`details.tasks` with `{ id, subject, status }`).
+ */
 export function extractTodos(branch: SessionEntry[]): string | null {
-	let lastTodos: TodoDetails["todos"] | null = null;
+	let lastTodos: string[] | null = null;
 
 	for (const entry of branch) {
 		if (entry.type !== "message") continue;
 		const msg = entry.message;
 		if (msg.role !== "toolResult" || msg.toolName !== "todo") continue;
-		const details = msg.details as TodoDetails | undefined;
-		if (details?.todos) lastTodos = details.todos;
+		const details = msg.details as
+			| (TaskDetails & Partial<TodoDetails>)
+			| undefined;
+
+		// rpiv-todo: details.tasks with { id, subject, status }
+		if (details?.tasks && Array.isArray(details.tasks)) {
+			const tasks = (details.tasks as Task[]).filter(
+				(t) => t.status !== "deleted",
+			);
+			if (tasks.length > 0) {
+				lastTodos = tasks.map((t) => {
+					const check = t.status === "completed" ? "x" : " ";
+					return `- [${check}] ${t.subject}`;
+				});
+			}
+			continue;
+		}
+
+		// Built-in: details.todos with { id, text, done }
+		if (details?.todos && Array.isArray(details.todos)) {
+			if (details.todos.length > 0) {
+				lastTodos = details.todos.map(
+					(t) => `- [${t.done ? "x" : " "}] ${t.text}`,
+				);
+			}
+		}
 	}
 
 	if (!lastTodos || lastTodos.length === 0) return null;
-	return lastTodos.map((t) => `- [${t.done ? "x" : " "}] ${t.text}`).join("\n");
+	return lastTodos.join("\n");
 }
 
 export function extractSkillList(ctx: ExtensionCommandContext): string | null {

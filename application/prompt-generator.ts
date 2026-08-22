@@ -98,28 +98,37 @@ function resolveHandoffModel(
 
 function buildSystemPrompt(goal: string | null): string {
 	const goalBlock = goal
-		? `The user's stated goal for the new session: "${goal}"`
+		? `The user has indicated the next session should focus on: "${goal}". Tailor the entire handoff doc toward this goal — emphasise relevant context, de-prioritise unrelated work, and make the next task align with this focus.`
 		: `No explicit goal was provided. Read the conversation and infer the most logical next task or continuation. Use it as the ## Next Task section.`;
 
 	return `You are a context transfer assistant. You receive a conversation history plus structured metadata (todos, git state, loaded skills, working directory, context usage).
 
 ${goalBlock}
 
-Generate a focused, self-contained handoff prompt a new AI coding session can act on immediately. The output must:
-1. Summarise what was done and what matters (decisions, findings, approaches)
+Write a handoff document summarising the current conversation so a fresh agent can continue the work.
+
+CRITICAL RULES:
+1. REDACT all sensitive information — API keys, passwords, tokens, credentials, secrets, and personally identifiable information (PII). Replace with [REDACTED] placeholders. Never reproduce secrets in the output.
+2. Do NOT duplicate content already captured in other artifacts (specs, plans, ADRs, issues, commits, diffs). Reference them by file path or URL instead. Summarise the key decisions or outcomes briefly but point to the source artifact for full detail.
+3. Include a Suggested Skills section recommending skills the new agent should invoke based on the work context and task type.
+
+The output must:
+1. Summarise what was done and what matters (decisions, findings, approaches) — reference specs, plans, ADRs, issues by path/URL instead of reproducing them
 2. Include relevant file paths that were discussed or modified
 3. Carry forward the todo list (preserving done/pending state)
-4. Include git branch and key recent changes (only if this is a git repo; otherwise omit the Git State section)
-5. List skills the new session should reload
+4. For each git repo involved (there may be multiple across different working directories), include the repo's working directory, branch, and key recent changes. Omit the Git State section entirely if no git repos were involved.
+5. Suggest skills the new session should invoke based on the work context
 6. State the next task clearly
-7. End with the ## Next Task section — this is extracted and sent as the live prompt to the new session
+7. End with the ## Next Task section — this is extracted and sent as the live prompt to the new session, followed by a ## Phase Adherence section
 
 Use exactly this output format — omit any section that has no content:
 
 ## Context
-[What was done, key decisions, approaches — 3-8 bullet points]
+[What was done, key decisions, approaches — 3-8 bullet points. Reference specs, plans, ADRs, issues by path/URL instead of duplicating.]
 
 ## Git State
+
+### repo-name (/path/to/repo)
 Branch: <branch>
 Recent changes:
 - path/to/file — what changed
@@ -131,8 +140,8 @@ Recent commits:
 - [ ] pending task
 - [x] completed task
 
-## Skills
-Reload on start: skill-a, skill-b
+## Suggested Skills
+Invoke on start: skill-a, skill-b
 
 ## Working Directory
 /path/to/project
@@ -140,7 +149,10 @@ Reload on start: skill-a, skill-b
 ## Next Task
 [Clear, actionable statement of the goal for this new session]
 
-IMPORTANT: Always end with ## Next Task as the final section. Output only the prompt — no preamble, no "Here is the prompt:".`;
+## Phase Adherence
+This is a handoff from a previous session. Phase adherence as defined in the system prompt is mandatory — classify this request through CLASSIFICATION and follow the appropriate phase workflow. Do not skip phases.
+
+IMPORTANT: Always end with ## Phase Adherence as the final section. Output only the prompt — no preamble, no "Here is the prompt:".`;
 }
 
 function buildUserPayload(opts: {
@@ -159,15 +171,22 @@ function buildUserPayload(opts: {
 		sections.push(`## Current Todos\n\n${opts.todos}`);
 	}
 
-	if (opts.git) {
-		const gitLines: string[] = [`Branch: ${opts.git.branch}`];
-		if (opts.git.status)
-			gitLines.push(`\nUncommitted changes:\n${opts.git.status}`);
-		if (opts.git.diffStat)
-			gitLines.push(`\nDiff stat (HEAD):\n${opts.git.diffStat}`);
-		if (opts.git.recentCommits)
-			gitLines.push(`\nRecent commits:\n${opts.git.recentCommits}`);
-		sections.push(`## Git Context\n\n${gitLines.join("\n")}`);
+	if (opts.git && opts.git.repos.length > 0) {
+		const isMultiRepo = opts.git.repos.length > 1;
+		const repoSections = opts.git.repos.map((repo) => {
+			const lines: string[] = [
+				`Working directory: ${repo.workingDirectory}`,
+				`Branch: ${repo.branch}`,
+			];
+			if (repo.status) lines.push(`\nUncommitted changes:\n${repo.status}`);
+			if (repo.diffStat) lines.push(`\nDiff stat (HEAD):\n${repo.diffStat}`);
+			if (repo.recentCommits)
+				lines.push(`\nRecent commits:\n${repo.recentCommits}`);
+			return isMultiRepo
+				? `### ${repo.path}\n${lines.join("\n")}`
+				: lines.join("\n");
+		});
+		sections.push(`## Git Context\n\n${repoSections.join("\n\n")}`);
 	}
 
 	if (opts.skills) {

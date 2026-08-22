@@ -11,7 +11,7 @@ import {
 	type Model,
 	type Api,
 	type ThinkingLevel,
-} from "@earendil-works/pi-ai";
+} from "@earendil-works/pi-ai/compat";
 import type { ModelRegistry } from "@earendil-works/pi-coding-agent";
 
 export interface LlmAuth {
@@ -60,7 +60,10 @@ export async function generateWithModel(
 	if (response.stopReason === "aborted") return null;
 
 	return response.content
-		.filter((c): c is { type: "text"; text: string } => c.type === "text")
-		.map((c) => c.text)
+		.filter(
+			(c: { type: string }): c is { type: "text"; text: string } =>
+				c.type === "text",
+		)
+		.map((c: { type: "text"; text: string }) => c.text)
 		.join("\n");
 }

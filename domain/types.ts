@@ -12,16 +12,64 @@ export interface Todo {
 	done: boolean;
 }
 
+/**
+ * Built-in pi todo tool details shape (legacy).
+ */
 export interface TodoDetails {
 	todos: Todo[];
 	nextId: number;
 }
 
-export interface GitContext {
+/**
+ * rpiv-todo (@juicesharp/rpiv-todo) task details shape.
+ *
+ * The tool name is still "todo" but the details use `tasks` instead of
+ * `todos`, and each task has `subject` + `status` instead of `text` + `done`.
+ */
+export type TaskStatus = "pending" | "in_progress" | "completed" | "deleted";
+
+export interface Task {
+	id: number;
+	subject: string;
+	description?: string;
+	activeForm?: string;
+	status: TaskStatus;
+	blockedBy?: number[];
+	owner?: string;
+	metadata?: Record<string, unknown>;
+}
+
+export interface TaskDetails {
+	action: string;
+	params: Record<string, unknown>;
+	tasks: Task[];
+	nextId: number;
+	error?: string;
+}
+
+/**
+ * Git state for a single repository.
+ */
+export interface GitRepoState {
+	/** Absolute path to the repository root (git toplevel). */
+	workingDirectory: string;
+	/** Display path — "." for the workspace itself, or a relative sub-path for sub-repos in an anchor repo. */
+	path: string;
 	branch: string;
 	status: string;
 	diffStat: string;
 	recentCommits: string;
+}
+
+/**
+ * Git context gathered from one or more repositories.
+ *
+ * Single repo: `repos` contains one entry with path ".".
+ * Anchor repo (workspace itself is not a repo but contains sub-repos):
+ * `repos` contains one entry per discoverable sub-repo.
+ */
+export interface GitContext {
+	repos: GitRepoState[];
 }
 
 export interface HandoffOriginData {
@@ -29,6 +77,15 @@ export interface HandoffOriginData {
 	goal: string | null;
 	timestamp: number;
 }
+
+/**
+ * Which terminal multiplexer to use for auto-submit during handoff.
+ *
+ * - `"tmux"` (default): uses `tmux send-keys` to confirm the editor overlay.
+ * - `"herdr"`: uses `herdr pane send-keys` and stores pane context in
+ *   shared memory so other extensions can locate this session.
+ */
+export type TerminalMode = "tmux" | "herdr";
 
 export interface HandoffSettings {
 	/**
@@ -45,6 +102,11 @@ export interface HandoffSettings {
 	 */
 	model?: string;
 	effort?: ThinkingLevel;
+
+	/**
+	 * Terminal multiplexer for auto-submit. Defaults to `"tmux"`.
+	 */
+	terminal?: TerminalMode;
 }
 
 export interface ContextUsage {
@@ -88,10 +150,64 @@ export interface TuiHandoffCompletedPayload {
 	/** The display title assigned to the new session. */
 	sessionTitle: string;
 	/**
-	 * The tmux pane id captured at the START of the handoff flow (before LLM
+	 * The terminal pane id captured at the START of the handoff flow (before LLM
 	 * generation). When provided, the auto-submit listener uses this instead
 	 * of re-capturing the active pane — which may have changed if the user
-	 * switched tmux tabs during generation.
+	 * switched terminal tabs during generation.
+	 *
+	 * This is a tmux pane id (e.g. "%5") or a herdr pane id (e.g. "w1:p1")
+	 * depending on the configured terminal mode.
 	 */
-	tmuxPaneId?: string | null;
+	paneId?: string | null;
+}
+
+// ── Herdr shared context ───────────────────────────────────────────────────
+
+/**
+ * Herdr pane coordinates captured from the environment.
+ *
+ * Stored in shared memory so other extensions and tools can locate the
+ * pi session's position in the Herdr workspace hierarchy.
+ */
+export interface HerdrPaneContext {
+	/** Herdr workspace id (e.g. "w1"). */
+	workspaceId: string;
+	/** Herdr tab id (e.g. "w1:t1"). */
+	tabId: string;
+	/** Herdr pane id (e.g. "w1:p1"). */
+	paneId: string;
+	/** When the context was captured (epoch ms). */
+	timestamp: number;
+}
+
+// ── Lifecycle event payloads ──────────────────────────────────────────────
+
+/**
+ * Payload for `handoff_tool_start` / `handoff_tool_end` lifecycle events.
+ */
+export interface HandoffToolEventPayload {
+	/** The goal passed to the `request_handoff` tool. */
+	goal: string;
+	/** The suggested command that was pre-filled. */
+	command: string;
+	/** Epoch ms timestamp. */
+	timestamp: number;
+}
+
+/**
+ * Payload for `handoff_command_start` / `handoff_command_complete` events.
+ */
+export interface HandoffCommandEventPayload {
+	/** The goal for the handoff (null when inferred). */
+	goal: string | null;
+	/** Whether quick mode was used (skips editor review). */
+	quickMode: boolean;
+	/** Epoch ms timestamp. */
+	timestamp: number;
+	/** Only on complete: the session title assigned. */
+	sessionTitle?: string;
+	/** Only on complete: path to the saved temp file. */
+	artifactPath?: string;
+	/** Only on complete: error message if the handoff failed. */
+	error?: string;
 }

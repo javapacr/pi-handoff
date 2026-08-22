@@ -21,7 +21,7 @@ export function gatherHandoffContext(
 	ctx: ExtensionCommandContext,
 ): GatheredContext {
 	const handoffContext = buildHandoffContext(ctx);
-	handoffContext.git = getGitContext(ctx.cwd);
+	handoffContext.git = getGitContext(ctx.cwd, handoffContext.conversationText);
 
 	return {
 		context: handoffContext,

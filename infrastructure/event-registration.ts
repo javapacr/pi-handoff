@@ -4,23 +4,31 @@
  * Registers lifecycle hooks:
  * - session_start notification when a new session was created from a handoff.
  * - tui_filled_handoff → agent_end auto-submit: when the request_handoff tool
- *   pre-fills the editor with `/handoff <goal>` and the process is inside tmux,
- *   automatically sends Enter to the pane after the agent turn ends.
+ *   pre-fills the editor with `/handoff <goal>` and the process is inside a
+ *   supported terminal multiplexer, automatically sends Enter to the pane
+ *   after the agent turn ends.
  * - tui_handoff_completed → auto-submit: when /handoff finishes generating
  *   the prompt and shows the editor review overlay, automatically sends Enter
- *   to confirm the review via tmux.
+ *   to confirm the review.
+ *
+ * Supports both tmux and herdr backends via the terminal strategy.
  */
 
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import type {
+	ExtensionAPI,
+	SessionEntry,
+} from "@earendil-works/pi-coding-agent";
 import type {
 	HandoffOriginData,
 	TuiHandoffCompletedPayload,
 } from "../domain/types";
+import { loadHandoffSettings } from "./config-repository";
 import {
-	getCurrentTmuxPaneId,
-	isTmuxSession,
-	sendEnterToPane,
-} from "./tmux-client";
+	captureTerminalContext,
+	resolveTerminalMode,
+	sendEnter,
+	type TerminalContext,
+} from "./terminal-strategy";
 
 /**
  * Delay (ms) after agent_end before sending Enter. Gives the TUI time to
@@ -36,16 +44,16 @@ const AUTO_SUBMIT_DELAY_MS = 200;
 const PENDING_FLAG_TIMEOUT_MS = 30_000;
 
 /**
- * Pane id captured at tui_filled_handoff emit time. When non-null, an
- * auto-submit is pending and will fire on the next agent_end.
+ * Terminal context captured at tui_filled_handoff emit time. When non-null,
+ * an auto-submit is pending and will fire on the next agent_end.
  */
-let pendingAutoSubmitPane: string | null = null;
+let pendingAutoSubmit: TerminalContext | null = null;
 
 /** Safety timeout handle for the pending flag. */
 let pendingFlagTimer: ReturnType<typeof setTimeout> | null = null;
 
 function clearPendingAutoSubmit(): void {
-	pendingAutoSubmitPane = null;
+	pendingAutoSubmit = null;
 	if (pendingFlagTimer) {
 		clearTimeout(pendingFlagTimer);
 		pendingFlagTimer = null;
@@ -55,31 +63,32 @@ function clearPendingAutoSubmit(): void {
 export function registerHandoffEvents(pi: ExtensionAPI): void {
 	// ── session_start: notify when a session was created from a handoff ──────
 
-	pi.on("session_start", async (event, ctx) => {
+	pi.on("session_start", (event, ctx) => {
 		if (event.reason !== "new") return;
 
 		const entries = ctx.sessionManager.getEntries();
 		const originEntry = entries.find(
-			(e) => e.type === "custom" && (e as any).customType === "handoff-origin",
-		) as any | undefined;
+			(e): e is Extract<SessionEntry, { type: "custom" }> =>
+				e.type === "custom" &&
+				(e as unknown as { customType?: string }).customType ===
+					"handoff-origin",
+		);
 
 		if (!originEntry) return;
 
-		const data = originEntry.data as HandoffOriginData | undefined;
+		const data = (originEntry as unknown as { data?: HandoffOriginData }).data;
 		const goalHint = data?.goal ? `: ${data.goal.slice(0, 50)}` : "";
 		ctx.ui.notify(`↩ Continued from previous session${goalHint}`, "info");
 	});
 
-	// ── tui_filled_handoff: capture pane for auto-submit ────────────────────
+	// ── tui_filled_handoff: capture terminal context for auto-submit ────────
 
-	pi.events.on("tui_filled_handoff", (_data) => {
-		// Only auto-submit when inside tmux.
-		if (!isTmuxSession()) return;
+	pi.events.on("tui_filled_handoff", async () => {
+		const settings = loadHandoffSettings();
+		const ctx = await captureTerminalContext(settings?.terminal);
+		if (!ctx) return;
 
-		const paneId = getCurrentTmuxPaneId();
-		if (!paneId) return;
-
-		pendingAutoSubmitPane = paneId;
+		pendingAutoSubmit = ctx;
 
 		// Safety: clear the flag after a timeout in case agent_end never fires.
 		if (pendingFlagTimer) clearTimeout(pendingFlagTimer);
@@ -91,37 +100,52 @@ export function registerHandoffEvents(pi: ExtensionAPI): void {
 
 	// ── agent_end: auto-submit Enter if a handoff is pending ────────────────
 
-	pi.on("agent_end", async () => {
-		if (pendingAutoSubmitPane === null) return;
+	pi.on("agent_end", () => {
+		if (pendingAutoSubmit === null) return;
 
-		const paneId = pendingAutoSubmitPane;
+		const ctx = pendingAutoSubmit;
 		clearPendingAutoSubmit();
 
 		// Small delay for the TUI to settle after the agent turn ends.
 		setTimeout(() => {
-			sendEnterToPane(paneId);
+			sendEnter(ctx);
 		}, AUTO_SUBMIT_DELAY_MS);
 	});
 
 	// ── tui_handoff_completed: auto-submit Enter for editor review ───────────
 	//
 	// Fires when /handoff has generated the prompt and is about to show the
-	// editor review overlay. The listener captures the pane and sends Enter
-	// after a delay long enough for the overlay to render.
+	// editor review overlay. The listener captures the terminal context and
+	// sends Enter after a delay long enough for the overlay to render.
 
-	pi.events.on("tui_handoff_completed", (data: unknown) => {
-		if (!isTmuxSession()) return;
-
-		// Use the pane id captured at the start of executeHandoff() (before LLM
-		// generation). If the user switched tmux tabs during generation, this is
-		// still the original pi pane. Fall back to live capture for safety.
+	pi.events.on("tui_handoff_completed", async (data: unknown) => {
+		const settings = loadHandoffSettings();
 		const payload = data as TuiHandoffCompletedPayload;
-		const paneId = payload?.tmuxPaneId ?? getCurrentTmuxPaneId();
-		if (!paneId) return;
+
+		// Use the terminal context captured at the start of executeHandoff()
+		// (before LLM generation). If the user switched terminal tabs during
+		// generation, this is still the original pi pane.
+		let ctx: TerminalContext | null = null;
+
+		if (payload?.paneId) {
+			const mode = resolveTerminalMode(settings?.terminal);
+			if (mode) {
+				ctx = { mode, paneId: payload.paneId };
+			}
+		}
+
+		// Fall back to live capture for safety.
+		if (!ctx) {
+			ctx = await captureTerminalContext(settings?.terminal);
+		}
+
+		if (!ctx) return;
+
+		const captured = ctx;
 
 		// 500ms gives the editor overlay time to render before Enter is sent.
 		setTimeout(() => {
-			sendEnterToPane(paneId);
+			sendEnter(captured);
 		}, 500);
 	});
 }
