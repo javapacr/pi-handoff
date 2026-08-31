@@ -107,6 +107,12 @@ export interface HandoffSettings {
 	 * Terminal multiplexer for auto-submit. Defaults to `"tmux"`.
 	 */
 	terminal?: TerminalMode;
+
+	/**
+	 * Whether /handoff nudges the agent to write a MemPalace diary entry
+	 * before the handoff proceeds. Defaults to true when absent.
+	 */
+	diaryReminder?: boolean;
 }
 
 export interface ContextUsage {

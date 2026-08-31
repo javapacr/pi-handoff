@@ -39,6 +39,7 @@ export function registerRequestHandoffTool(pi: ExtensionAPI): void {
 			"Call request_handoff with a short goal string (verbatim from the user or current task).",
 			"Do NOT research, summarize, or gather context before calling — /handoff handles all context transfer.",
 			"After calling request_handoff, stop. The tool just pre-fills the command; the user presses Enter to run it.",
+			"If this session produced durable learnings not yet recorded in your memory diary, consider writing a diary entry (mempalace_diary_write) before calling this tool.",
 		],
 		parameters: {
 			type: "object" as const,

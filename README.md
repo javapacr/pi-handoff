@@ -9,6 +9,7 @@ Context handoff for the [pi coding agent](https://github.com/earendil-works/pi) 
 | `request_handoff` tool | Agent-callable tool that pre-fills the `/handoff` command with a goal string. Fire-and-forget — sets the TUI editor text and stops. |
 | `/handoff` command | Interactive slash command that collects session context and generates a handoff prompt for review. |
 | `/handoff!` quick mode | Skip the editor review step — generate and output the handoff prompt immediately. |
+| Diary reminder | Before the handoff prompt is generated, nudges the agent (one injected suggestion) to persist durable session learnings to MemPalace via `mempalace_diary_write`. The agent skips on its own if it already wrote a diary entry this session or nothing is worth recording. Requires the `mempalace_diary_write` tool to be active; disable with `handoff.diaryReminder: false`. |
 | Terminal multiplexer support | Auto-submits the handoff via **tmux** or **herdr** based on config — no manual Enter needed. |
 | Herdr shared memory | When using herdr, stores pane/workspace/tab context to `~/.pi/agent/.herdr-handoff-context.json` so other extensions can locate this session. |
 | Lifecycle events | Emits `handoff_tool_start/end`, `handoff_command_start/complete` events on the event bus for other extensions to react to. |
@@ -88,6 +89,10 @@ Add to your pi profile's `package.json`:
 
 The agent can also call `request_handoff` as a tool to trigger the flow programmatically.
 
+### Diary reminder
+
+When `/handoff` runs, the agent is nudged (once, before the handoff prompt is generated) to persist durable session learnings to MemPalace. It skips the diary on its own if it already wrote one this session or nothing durable is worth recording, keeping any reply to a single line. The nudge only fires when the `mempalace_diary_write` tool is active in the session — sessions without the memory system pay no extra turns — and can be disabled with `handoff.diaryReminder: false` in settings.
+
 ## Configuration
 
 Add an optional `handoff` block to your pi `settings.json` (`~/.pi/agent/settings.json`):
@@ -109,6 +114,7 @@ Add an optional `handoff` block to your pi `settings.json` (`~/.pi/agent/setting
 | `model` | `string` | — | Model id for generation. Bare id when `provider` is set, or `provider/model` reference. |
 | `effort` | `string` | — | Thinking level for generation (`"low"`, `"medium"`, `"high"`). |
 | `terminal` | `"tmux"` \| `"herdr"` | auto-detect | Which terminal multiplexer to use for auto-submit. When omitted, auto-detects from environment. |
+| `diaryReminder` | `boolean` | `true` | When enabled, `/handoff` nudges the agent to write a MemPalace diary entry (`mempalace_diary_write`) before the handoff prompt is generated. Skipped automatically when the tool is not active. |
 
 ### Terminal modes
 

@@ -28,6 +28,7 @@ import {
 import type { GatheredContext } from "./context-gatherer";
 import { generateHandoffPrompt } from "./prompt-generator";
 import { gatherHandoffContext } from "./context-gatherer";
+import { maybeRunDiaryReminder } from "./diary-reminder";
 import {
 	captureTerminalContext,
 	type TerminalContext,
@@ -233,8 +234,8 @@ export async function executeHandoff(
 
 	await maybeSuggestCompaction(ctx);
 
-	const gathered = gatherHandoffContext(ctx);
-	if (!gathered.hasConversation) {
+	const initial = gatherHandoffContext(ctx);
+	if (!initial.hasConversation) {
 		ctx.ui.notify("No conversation to hand off", "error");
 		emitCommandComplete(pi, {
 			goal,
@@ -243,6 +244,15 @@ export async function executeHandoff(
 		});
 		return;
 	}
+
+	// Nudge the agent to persist durable learnings to MemPalace before the
+	// handoff prompt is generated — while this session and its memory tools
+	// are still live. Best-effort: never blocks or breaks the handoff.
+	await maybeRunDiaryReminder(pi, ctx, settings);
+
+	// Re-gather so the handoff snapshot includes the diary turn and the leaf
+	// label lands on the true handoff point (the nudge appended entries).
+	const gathered = gatherHandoffContext(ctx);
 
 	const generated = await generateHandoffPrompt(
 		ctx,
