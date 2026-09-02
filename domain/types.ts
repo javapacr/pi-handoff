@@ -98,7 +98,7 @@ export interface HandoffSettings {
 	 *   a one-off LLM call (honours `provider`/`model`/`effort`).
 	 * - `"in-session"`: inject an instruction turn into the live session; the
 	 *   session's own model writes the doc (prompt-cache-aligned, cheaper when
-	 *   the summarizer IS the session model) and calls `handoff_launch` to
+	 *   the summarizer IS the session model) and calls the `continue` tool to
 	 *   queue the new session. `provider`/`model`/`effort` are ignored.
 	 */
 	type?: HandoffMode;

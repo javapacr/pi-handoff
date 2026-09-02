@@ -2,6 +2,8 @@
  * Pure domain helpers for handoff prompts.
  */
 
+import { HANDOFF_PHASE_ADHERENCE } from "./handoff-template";
+
 /**
  * Split a generated handoff prompt at the last ## Next Task header.
  * The context block is pre-seeded into the session via setup().
@@ -21,15 +23,13 @@ export function splitHandoffPrompt(prompt: string): {
 }
 
 /**
- * Validate a handoff document and extract its Next Task payload.
- *
- * Returns the trimmed content following the LAST `## Next Task` heading
- * (including any `## Phase Adherence` tail — same content `splitHandoffPrompt`
- * would send as the live message), or null when the heading is missing or the
- * section is empty. Used by `handoff_launch` and `/handoff-launch` as the
- * gate before queueing the new session.
+ * Content of the LAST `## Next Task` section — everything between its heading
+ * and the next heading (or EOF), trimmed. Null when the heading is missing or
+ * the section is empty. Deliberately EXCLUDES any model-authored trailing
+ * sections (e.g. a `## Phase Adherence` variant) — the canonical text is
+ * appended by `buildContinuationPrompt` instead.
  */
-export function findNextTaskSection(doc: string): string | null {
+export function findNextTaskContent(doc: string): string | null {
 	const re = /^##\s+Next Task[^\S\n]*$/gm;
 	let last: RegExpExecArray | null = null;
 	let match: RegExpExecArray | null;
@@ -42,8 +42,19 @@ export function findNextTaskSection(doc: string): string | null {
 	const section = (
 		nextHeading === -1 ? after : after.slice(0, nextHeading)
 	).trim();
-	if (section.length === 0) return null;
-	return after.trim();
+	return section.length > 0 ? section : null;
+}
+
+/**
+ * Build the live first message for the new session: the Next Task content
+ * plus the CANONICAL Phase Adherence section owned by the extension. Returns
+ * null when the document is invalid (missing/empty Next Task) — the caller
+ * turns that into the repair-loop result.
+ */
+export function buildContinuationPrompt(doc: string): string | null {
+	const task = findNextTaskContent(doc);
+	if (task === null) return null;
+	return `${task}\n\n${HANDOFF_PHASE_ADHERENCE}`;
 }
 
 /**

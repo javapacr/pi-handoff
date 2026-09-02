@@ -6,8 +6,8 @@
  *
  * - detached: called by application/handoff-executor.ts after prompt
  *   generation + editor review.
- * - in-session: called by the `/handoff-launch <docPath>` command that the
- *   `handoff_launch` tool pre-fills.
+ * - in-session: called by the `/continue <docPath>` command that the
+ *   `continue` tool pre-fills.
  *
  * Handles: labeling the old session's leaf, setting up the new session with
  * the handoff context block + origin marker, and sending the initial message.

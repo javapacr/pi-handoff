@@ -11,16 +11,19 @@
  *   one-off LLM call, editor review, create the new session.
  * - "in-session": inject an instruction turn into the live session; the
  *   session's own model writes the doc (prompt-cache-aligned) and calls the
- *   `handoff_launch` tool, which pre-fills `/handoff-launch <docPath>`.
+ *   `continue` tool, which fills the TUI input with `/continue <docPath>`.
+ *
+ * The pi-handoff skill (shipped via the manifest) is the primary instruction
+ * source for agents performing handoffs.
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { loadHandoffSettings } from "./infrastructure/config-repository";
 import { registerRequestHandoffTool } from "./tools/request-handoff";
-import { registerHandoffLaunchTool } from "./tools/handoff-launch";
+import { registerContinueTool } from "./tools/continue";
 import { registerHandoffCommandDetached } from "./commands/handoff";
 import { registerHandoffCommandInSession } from "./commands/handoff-in-session";
-import { registerHandoffLaunchCommand } from "./commands/handoff-launch";
+import { registerContinueCommand } from "./commands/continue";
 import { registerHandoffEvents } from "./infrastructure/event-registration";
 
 export default function handoffExtension(pi: ExtensionAPI): void {
@@ -29,8 +32,8 @@ export default function handoffExtension(pi: ExtensionAPI): void {
 	const settings = loadHandoffSettings();
 	if (settings?.type === "in-session") {
 		registerHandoffCommandInSession(pi, settings);
-		registerHandoffLaunchCommand(pi);
-		registerHandoffLaunchTool(pi);
+		registerContinueCommand(pi);
+		registerContinueTool(pi);
 		registerRequestHandoffTool(pi, { mode: "in-session" });
 	} else {
 		registerHandoffCommandDetached(pi, settings);

@@ -30,11 +30,12 @@ Context handoff for the [pi coding agent](https://github.com/earendil-works/pi) 
 index.ts                          Entry point — mode-selecting registration
 ├── tools/
 │   ├── request-handoff.ts        request_handoff tool registration
-│   └── handoff-launch.ts         handoff_launch tool (in-session mode)
+│   ├── continue.ts               continue tool — fills TUI with /continue (in-session mode)
+│   └── skills/pi-handoff/        Shipped skill — primary agent instructions
 ├── commands/
 │   ├── handoff.ts                /handoff command — detached registration
 │   ├── handoff-in-session.ts     /handoff command — in-session registration
-│   └── handoff-launch.ts         /handoff-launch command (in-session mode)
+│   └── continue.ts               /continue command (in-session mode)
 ├── application/
 │   ├── context-gatherer.ts       Collects git state, session history, tasks
 │   ├── prompt-generator.ts       Builds system/user prompts, resolves model
@@ -154,14 +155,14 @@ When the summarizer IS the session model (e.g. Sonnet-only profiles), a detached
 $PI_CODING_AGENT_DIR/data/pi-handoff/handoff-<timestamp>.md
 ```
 
-then calls the **`handoff_launch`** tool. The tool validates the document (a non-empty `## Next Task` section; on failure it reports what to repair and the agent fixes the file — a self-healing loop) and pre-fills the TUI input with `/handoff-launch <docPath>`. Press Enter (or let herdr/tmux auto-submit after the turn ends) and the new session starts with the Next Task — the same session-creation path the detached flow uses.
+then calls the **`continue`** tool — the final step, only after the document is complete on disk. The tool validates the document (a non-empty `## Next Task` section; on failure it reports what to repair and the agent fixes the file — a self-healing loop) and fills the TUI input with `/continue <docPath>`. Press Enter (or let herdr/tmux auto-submit after the turn ends) and the new session starts with the Next Task — the same session-creation path the detached flow uses.
+
+The **pi-handoff skill** (shipped with the extension) is the primary instruction source for agents performing handoffs: the flow, the document contract, the exact output template, and how to use `continue`. The injected instruction turn is deliberately thin — goal, skill pointer, target path — and embeds the redaction rule as a safety net. The `## Phase Adherence` section of the continuation prompt is owned by the extension (canonical text appended by the tool), so model-authored variants never leak into the new session's first message.
 
 Notes:
 
 - `provider`/`model`/`effort` are ignored in this mode — generation deliberately uses the session's own model.
-- The instruction embeds the exact same output template as the detached prompt (shared constant in `domain/handoff-template.ts`), so both modes produce identical document shapes.
-- The diary reminder (when enabled and `mempalace_diary_write` is active) is folded into the injected instruction instead of a separate pre-flight turn.
-- `/handoff-launch <docPath>` can also be run manually for recovery, e.g. when auto-submit missed.
+- `/continue [docPath]` can also be run manually for recovery — with no argument it uses the newest `handoff-*.md` in the data dir.
 
 ### Lifecycle events
 

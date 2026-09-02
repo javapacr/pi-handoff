@@ -8,10 +8,10 @@
  *   template is embedded in the system prompt of a one-off LLM call.
  * - in-session (commands/handoff-in-session.ts): the template is embedded in
  *   the instruction turn injected into the live session, which writes the doc
- *   to disk and calls `handoff_launch`.
+ *   to disk and calls the `continue` tool.
  *
  * Keep these constants byte-stable: the detached prompt's output shape and
- * the in-session doc shape must stay identical so `/handoff-launch` can
+ * the in-session doc shape must stay identical so `/continue` can
  * process either.
  */
 
@@ -31,6 +31,15 @@ export const HANDOFF_CRITICAL_RULES = `CRITICAL RULES:
 1. REDACT all sensitive information — API keys, passwords, tokens, credentials, secrets, and personally identifiable information (PII). Replace with [REDACTED] placeholders. Never reproduce secrets in the output.
 2. Do NOT duplicate content already captured in other artifacts (specs, plans, ADRs, issues, commits, diffs). Reference them by file path or URL instead. Summarise the key decisions or outcomes briefly but point to the source artifact for full detail.
 3. Include a Suggested Skills section recommending skills the new agent should invoke based on the work context and task type.`;
+
+/**
+ * Canonical Phase Adherence section — appended by the `continue` tool to the
+ * Next Task payload to form the new session's live first message. The
+ * extension owns this text so model-authored variants (which may carry
+ * arbitrary directives) never leak into the next session's opening prompt.
+ */
+export const HANDOFF_PHASE_ADHERENCE = `## Phase Adherence
+This is a handoff from a previous session. Phase adherence as defined in the system prompt is mandatory — classify this request through CLASSIFICATION and follow the appropriate phase workflow. Do not skip phases.`;
 
 /**
  * The exact output format — from `## Context` through the `## Phase Adherence`
@@ -64,5 +73,4 @@ Invoke on start: skill-a, skill-b
 ## Next Task
 [Clear, actionable statement of the goal for this new session]
 
-## Phase Adherence
-This is a handoff from a previous session. Phase adherence as defined in the system prompt is mandatory — classify this request through CLASSIFICATION and follow the appropriate phase workflow. Do not skip phases.`;
+${HANDOFF_PHASE_ADHERENCE}`;

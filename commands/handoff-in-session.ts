@@ -6,8 +6,8 @@
  * session. The session's own model — with the full conversation already in
  * its context window — writes the handoff document to
  * `$PI_CODING_AGENT_DIR/data/pi-handoff/handoff-<timestamp>.md` and then calls
- * the `handoff_launch` tool, which validates the doc and pre-fills the
- * new-session launch command.
+ * the `continue` tool, which validates the doc and fills the TUI input with
+ * the `/continue` launch command.
  *
  * Cost rationale: when the summarizer IS the session model (e.g. Sonnet-only
  * work profile), this turn is prompt-cache-aligned by construction — the full
@@ -21,16 +21,13 @@
 
 import { promises as fs } from "node:fs";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import type {
 	ExtensionAPI,
 	ExtensionCommandContext,
 } from "@earendil-works/pi-coding-agent";
 import type { HandoffSettings } from "../domain/types";
-import {
-	HANDOFF_CRITICAL_RULES,
-	HANDOFF_OUTPUT_TEMPLATE,
-	handoffGoalBlock,
-} from "../domain/handoff-template";
+import { handoffGoalBlock } from "../domain/handoff-template";
 import { hasDiaryTool } from "../application/diary-reminder";
 import { hasHandoffableConversation } from "../infrastructure/session-adapter";
 import { resolvePiAgentDir } from "../infrastructure/config-repository";
@@ -48,11 +45,25 @@ export function newHandoffDocPath(): string {
 }
 
 /**
+ * Absolute path to the shipped pi-handoff skill — the authoritative
+ * instruction source for the flow. Resolved relative to THIS module, so it
+ * works from the working tree AND from the git-store install clone.
+ */
+function skillPath(): string {
+	return fileURLToPath(
+		new URL("../skills/pi-handoff/SKILL.md", import.meta.url),
+	);
+}
+
+/**
  * Build the instruction turn injected into the live session.
  *
- * Embeds the SAME output template the detached system prompt uses
- * (`domain/handoff-template.ts` is the single source of truth), plus the
- * redaction rules and the target file path.
+ * Deliberately THIN: the pi-handoff skill is the authoritative instruction
+ * source (document contract, template, rules, flow) — the instruction only
+ * carries what is per-invocation: the goal, the skill location, the target
+ * file path, and the `continue` handoff. The redaction rule is repeated here
+ * because it is a safety rule that must hold even if the agent skips reading
+ * the skill.
  */
 export function buildInSessionInstruction(opts: {
 	goal: string | null;
@@ -65,8 +76,8 @@ export function buildInSessionInstruction(opts: {
 	const parts: string[] = [
 		"[handoff] Produce the handoff document for this session now.",
 		handoffGoalBlock(goal),
-		"You are writing this document from live context — this session's conversation history, the current todo state, and the git working trees are your source material. Do not reproduce a raw transcript.",
-		HANDOFF_CRITICAL_RULES,
+		`The pi-handoff skill is the authoritative instruction for this flow. Read it first, then follow its document contract, template, and rules exactly: ${skillPath()}`,
+		"Non-negotiable even if you skip the skill: REDACT all secrets, credentials, tokens, and PII as [REDACTED] — never reproduce them in the document.",
 	];
 
 	if (settings?.diaryReminder !== false && hasMemoryTool) {
@@ -77,9 +88,8 @@ export function buildInSessionInstruction(opts: {
 
 	parts.push(
 		`Write the document to this exact path:\n${docPath}\n\nThe parent directory already exists. The file must contain ONLY the document itself — no preamble, no closing remarks, no code fences.`,
-		`Use exactly this output format — omit any section that has no content:\n\n${HANDOFF_OUTPUT_TEMPLATE}`,
-		"IMPORTANT: Always end the document with ## Phase Adherence as the final section.",
-		`When the file is written, call the \`handoff_launch\` tool with {"docPath": "${docPath}"}. It validates the document and pre-fills the new-session launch command in the TUI. If it reports a problem, fix the file and call it again. After handoff_launch succeeds, stop — no further tool calls, and keep any reply to one short line.`,
+		"IMPORTANT: Always end the document with ## Phase Adherence as the final section. The ## Next Task section must state the actual work for the new session — never instructions about the handoff itself.",
+		`When the file is written, call the \`continue\` tool with {"docPath": "${docPath}"}. It validates the document and fills the TUI input with the /continue launch command. If it reports a problem, fix the file and call it again. After continue succeeds, stop — no further tool calls, and keep any reply to one short line.`,
 	);
 
 	return parts.join("\n\n");
@@ -148,7 +158,7 @@ export function registerHandoffCommandInSession(
 			pi.sendUserMessage(instruction, { deliverAs: "followUp" });
 
 			ctx.ui.notify(
-				"Handoff generation injected into this session — the agent will write the doc, then handoff_launch queues the new session",
+				"Handoff generation injected into this session — the agent will write the doc, then the continue tool queues the new session",
 				"info",
 			);
 		},

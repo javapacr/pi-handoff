@@ -31,7 +31,7 @@ export function registerRequestHandoffTool(
 	const mode = options?.mode ?? "detached";
 	const modeNote =
 		mode === "in-session"
-			? "Running /handoff injects the generation turn into this session; the agent writes the doc and handoff_launch queues the new session."
+			? "Running /handoff injects the generation turn into this session; the agent writes the doc and the continue tool queues the new session."
 			: "Running /handoff generates the prompt in a detached LLM call and creates the new session.";
 
 	pi.registerTool({

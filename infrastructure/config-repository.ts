@@ -4,7 +4,7 @@
  * Reads the optional `handoff` block from `PI_CODING_AGENT_DIR/settings.json`.
  */
 
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import type { HandoffSettings } from "../domain/types";
@@ -31,6 +31,33 @@ export function resolvePiAgentDir(): string {
 		return join(homedir(), ".pi", "agent");
 	}
 	return expandHomeDirectory(configuredDir, homedir());
+}
+
+/** Data dir for handoff documents, under the pi agent dir. */
+export function handoffDataDir(): string {
+	return join(resolvePiAgentDir(), "data", "pi-handoff");
+}
+
+/** Timestamped doc path, same format as the detached artifact name. */
+export function newHandoffDocPath(): string {
+	const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
+	return join(handoffDataDir(), `handoff-${timestamp}.md`);
+}
+
+/**
+ * Newest handoff document in the data dir, or null when none exist.
+ * Backs argument-less `/continue` (manual recovery).
+ */
+export function newestHandoffDocPath(): string | null {
+	try {
+		const docs = readdirSync(handoffDataDir())
+			.filter((f) => f.startsWith("handoff-") && f.endsWith(".md"))
+			.sort();
+		const latest = docs.at(-1);
+		return latest ? join(handoffDataDir(), latest) : null;
+	} catch {
+		return null;
+	}
 }
 
 export function loadHandoffSettings(): HandoffSettings | null {

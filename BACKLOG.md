@@ -55,18 +55,35 @@ per mode.
    validates `## Next Task` exists before prefilling; on failure, tool result
    tells the agent to repair the doc (self-healing loop).
 
-### Implementation notes (2026-09-02)
+### Implementation notes (2026-09-02, redesign same day after live probe)
 
-- The "new-session launch command" the tool prefills is an internal
-  `/handoff-launch <docPath>` command (in-session mode only) — a literal
-  `pi` CLI invocation cannot work: Enter in the TUI sends to the CURRENT
-  session; only an internal command can create the new session in-process.
-  It reuses the exact detached session-creation path (`createHandoffSession`,
-  extracted to `application/session-creator.ts`). Also usable manually for
-  recovery when auto-submit missed.
+- **`continue` redesign** (user-directed, after watching the herdr probe):
+  the generation tool is `continue` (was `handoff_launch`) and the launch
+  command is `/continue [docPath]` (was `/handoff-launch`). The **shipped
+  `pi-handoff` skill** (manifest `pi.skills`) is now the PRIMARY instruction
+  source — flow, document contract, exact template, `continue` usage. The
+  injected instruction turn is deliberately THIN: goal, skill path (resolved
+  from the module location so it works in the git-store clone), redaction
+  safety net, file discipline, `continue` handoff, stop discipline. The
+  template no longer rides in the instruction.
+- The continuation prompt's `## Phase Adherence` is CANONICAL extension-owned
+  text (`HANDOFF_PHASE_ADHERENCE`): `buildContinuationPrompt` strips any
+  model-authored trailing section and appends the standard paragraph. Rationale:
+  the live probe caught a model-authored Phase Adherence variant leaking extra
+  directives ("route through CLASSIFICATION → VERIFICATION…") into the next
+  session's first prompt, plus the next session then started doing handoff-meta
+  work — the Next Task framing rule ("actual work, never handoff meta") and the
+  canonical PA both counter this.
+- The "new-session launch command" the tool prefills is `/continue <docPath>`
+  (in-session mode only) — a literal `pi` CLI invocation cannot work: Enter in
+  the TUI sends to the CURRENT session; only an internal command can create
+  the new session in-process. It reuses the exact detached session-creation
+  path (`createHandoffSession`, extracted to `application/session-creator.ts`).
 - Shared constants live in `domain/handoff-template.ts`
-  (`HANDOFF_CRITICAL_RULES`, `HANDOFF_OUTPUT_TEMPLATE`, `handoffGoalBlock`);
-  the detached `buildSystemPrompt` output is byte-identical to pre-extraction.
+  (`HANDOFF_CRITICAL_RULES`, `HANDOFF_OUTPUT_TEMPLATE`, `HANDOFF_PHASE_ADHERENCE`,
+  `handoffGoalBlock`); the detached `buildSystemPrompt` output is byte-identical
+  to pre-extraction (re-verified after the PA refactor). The skill's template
+  block mirrors `HANDOFF_OUTPUT_TEMPLATE` — keep in sync.
 - No compaction suggestion on this path (unlike detached): compacting first
   would replace the warm full-history prefix that makes the mode cheap.
 - Diary reminder is folded into the injected instruction (one turn) instead

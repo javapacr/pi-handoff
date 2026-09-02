@@ -1,14 +1,15 @@
 /**
- * /handoff-launch command — in-session mode only.
+ * /continue command — in-session mode only.
  *
- * The mechanical launcher that `handoff_launch` pre-fills. Reads the written
- * handoff document, re-validates its `## Next Task` section, and creates the
- * new session through the SAME path as the detached flow (shared
- * `createHandoffSession`): leaf label, pre-seeded handoff context, live first
- * message = the Next Task payload.
+ * Takes the generated handoff document and pushes it into the next session.
+ * The `continue` tool pre-fills `/continue <docPath>` after the doc is
+ * written; the command re-validates the document and creates the new session
+ * through the SAME path as the detached flow (shared `createHandoffSession`):
+ * leaf label, pre-seeded handoff context, live first message = the Next Task.
  *
- * Can also be run manually for recovery, e.g. when auto-submit missed:
- * `/handoff-launch /path/to/handoff-<ts>.md`.
+ * The argument is optional: `/continue` with no argument uses the NEWEST
+ * `handoff-*.md` in the handoff data dir — manual recovery when auto-submit
+ * missed.
  */
 
 import { promises as fs } from "node:fs";
@@ -18,8 +19,8 @@ import type {
 	ExtensionCommandContext,
 } from "@earendil-works/pi-coding-agent";
 import {
+	buildContinuationPrompt,
 	deriveSessionTitle,
-	findNextTaskSection,
 	splitHandoffPrompt,
 } from "../domain/handoff-prompt";
 import { createHandoffSession } from "../application/session-creator";
@@ -27,28 +28,38 @@ import {
 	emitCommandComplete,
 	emitCommandStart,
 } from "../infrastructure/event-channels";
+import {
+	newestHandoffDocPath,
+	resolvePiAgentDir,
+} from "../infrastructure/config-repository";
 
-export function registerHandoffLaunchCommand(pi: ExtensionAPI): void {
-	pi.registerCommand("handoff-launch", {
+export function registerContinueCommand(pi: ExtensionAPI): void {
+	pi.registerCommand("continue", {
 		description:
-			"Launch the new session from a written handoff document. Usage: /handoff-launch <docPath>",
+			"Continue the current work in a new session from a handoff document. Usage: /continue [docPath]",
 		handler: async (args, ctx: ExtensionCommandContext) => {
 			if (ctx.mode !== "tui") {
-				ctx.ui.notify("handoff-launch requires interactive mode", "error");
+				ctx.ui.notify("continue requires interactive mode", "error");
 				return;
 			}
 
 			const rawPath = args.trim().replace(/^"(.*)"$/, "$1");
+			let docPath: string;
 			if (!rawPath) {
-				ctx.ui.notify(
-					"Usage: /handoff-launch <handoff-doc-path>",
-					"error",
-				);
-				return;
+				const latest = newestHandoffDocPath();
+				if (!latest) {
+					ctx.ui.notify(
+						`No handoff documents in ${join(resolvePiAgentDir(), "data", "pi-handoff")} — run /handoff first`,
+						"error",
+					);
+					return;
+				}
+				docPath = latest;
+			} else {
+				docPath = isAbsolute(rawPath)
+					? rawPath
+					: join(ctx.cwd, rawPath);
 			}
-			const docPath = isAbsolute(rawPath)
-				? rawPath
-				: join(ctx.cwd, rawPath);
 
 			emitCommandStart(pi, { goal: null, quickMode: true });
 
@@ -65,8 +76,8 @@ export function registerHandoffLaunchCommand(pi: ExtensionAPI): void {
 				return;
 			}
 
-			const nextTask = findNextTaskSection(doc);
-			if (nextTask === null) {
+			const liveMessage = buildContinuationPrompt(doc);
+			if (liveMessage === null) {
 				ctx.ui.notify(
 					`Handoff document has no non-empty "## Next Task" section — fix ${docPath} or run /handoff again`,
 					"error",
@@ -80,7 +91,7 @@ export function registerHandoffLaunchCommand(pi: ExtensionAPI): void {
 			}
 
 			const { context: contextBlock } = splitHandoffPrompt(doc);
-			const sessionTitle = deriveSessionTitle(null, nextTask);
+			const sessionTitle = deriveSessionTitle(null, liveMessage);
 
 			// Emit the completion BEFORE creating the session — once
 			// ctx.newSession() completes, pi invalidates this extension instance
@@ -105,7 +116,7 @@ export function registerHandoffLaunchCommand(pi: ExtensionAPI): void {
 						goal: null,
 						sessionTitle,
 						contextBlock,
-						liveMessage: nextTask,
+						liveMessage,
 					},
 				);
 
@@ -125,7 +136,7 @@ export function registerHandoffLaunchCommand(pi: ExtensionAPI): void {
 				const message =
 					err instanceof Error ? err.message : String(err);
 				ctx.ui.notify(
-					`Handoff launch failed: ${message}. The document is preserved at ${docPath}.`,
+					`Continue failed: ${message}. The document is preserved at ${docPath}.`,
 					"error",
 				);
 				emitCommandComplete(pi, {
