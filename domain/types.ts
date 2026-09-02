@@ -76,6 +76,8 @@ export interface HandoffOriginData {
 	parentSession: string | undefined;
 	goal: string | null;
 	timestamp: number;
+	/** Path of the handoff document this session was created from (when known). */
+	docPath?: string;
 }
 
 /**

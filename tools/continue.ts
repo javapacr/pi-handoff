@@ -137,7 +137,7 @@ export function registerContinueTool(pi: ExtensionAPI): void {
 				content: [
 					{
 						type: "text" as const,
-						text: `Handoff document validated (${sessionTitle}). /continue pre-filled in the input box — the next session will start with this document's Next Task. ${autoSubmitLabel}`,
+						text: `Handoff document ${docPath} validated (${sessionTitle}). /continue is pre-filled — the new session will be seeded with this path as read-first context and start with the document's Next Task. ${autoSubmitLabel}`,
 					},
 				],
 				details: {

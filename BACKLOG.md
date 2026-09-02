@@ -90,6 +90,15 @@ per mode.
   of a separate pre-flight turn; still gated by `handoff.diaryReminder` and
   `mempalace_diary_write` tool presence.
 
+- **Doc reference instead of pre-load** (2026-09-02, user): the new session
+  is seeded with the document PATH + a read-first instruction, not the doc
+  content — docs can be large and the content is pulled from disk on demand.
+  `createHandoffSession` no longer takes `contextBlock`.
+- **Generic `/continue`** (2026-09-02, user): `/continue <text>` (non-path)
+  sends the text AS-IS to a new session — no handoff machinery — so the
+  command doubles as a general "continue in a fresh session" tool.
+  Disambiguation between a docPath and literal text is existence-based.
+
 ### Known limitations (reviewed 2026-09-02, oracle pass — non-blocking)
 
 - The original goal is not threaded through `handoff_launch` →

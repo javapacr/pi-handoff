@@ -162,7 +162,8 @@ The **pi-handoff skill** (shipped with the extension) is the primary instruction
 Notes:
 
 - `provider`/`model`/`effort` are ignored in this mode — generation deliberately uses the session's own model.
-- `/continue [docPath]` can also be run manually for recovery — with no argument it uses the newest `handoff-*.md` in the data dir.
+- `/continue` is general-purpose: an existing file path seeds it as read-first handoff context; ANY OTHER TEXT is sent to a new session as-is (no handoff machinery); no argument uses the newest `handoff-*.md`.
+- The handoff document is NOT pre-loaded into the new session (docs can be large) — the session is seeded with the document path plus a read-first instruction, and the content is pulled from disk on demand.
 
 ### Lifecycle events
 

@@ -399,8 +399,8 @@ export async function executeHandoff(
 			{
 				goal,
 				sessionTitle,
-				contextBlock,
 				liveMessage: nextTask || finalPrompt,
+				artifactPath: handoffDocPath || undefined,
 			},
 		);
 
