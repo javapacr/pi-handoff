@@ -178,6 +178,10 @@ The extension emits events on the pi event bus. Other extensions can listen:
 | `handoff_command_start` | `/handoff` command began | `{ goal, quickMode, timestamp }` |
 | `handoff_command_complete` | `/handoff` command finished | `{ goal, quickMode, sessionTitle?, artifactPath?, error?, timestamp }` |
 
+## Testing
+
+`npm test` runs a behavioral smoke suite (31 checks). It stages the repo's TypeScript tree into a temp ESM context, stubs the `@earendil-works/*` runtime packages through node module hooks (repo devDep versions drift from pi's runtime aliases), loads the staged extension, and asserts: registration shapes per `handoff.type`, the continue tool's validate/repair loop, the canonical Phase Adherence continuation prompt, lifecycle event pairing, stale-ctx emit ordering, and the `/continue` modes (bare → newest doc, generic text, no docs).
+
 ## License
 
 MIT

@@ -1,6 +1,9 @@
 {
   "name": "pi-handoff",
   "version": "0.1.1",
+  "scripts": {
+    "test": "tsx test/smoke.ts"
+  },
   "description": "Context handoff for pi — transfer session context to a new focused session via LLM-generated prompts",
   "keywords": [
     "pi-package",
@@ -42,6 +45,7 @@
     "@earendil-works/pi-coding-agent": ">=0.74.0",
     "@earendil-works/pi-tui": ">=0.74.0",
     "typebox": "^1.0.0",
+    "tsx": "^4.19.0",
     "typescript": "^5.0.0"
   }
 }
