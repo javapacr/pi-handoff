@@ -9,6 +9,8 @@ Context handoff for the [pi coding agent](https://github.com/earendil-works/pi) 
 | `request_handoff` tool | Agent-callable tool that pre-fills the `/handoff` command with a goal string. Fire-and-forget — sets the TUI editor text and stops. |
 | `/handoff` command | Interactive slash command that collects session context and generates a handoff prompt for review. |
 | `/handoff!` quick mode | Skip the editor review step — generate and output the handoff prompt immediately. |
+| Streaming progress loader | One continuous loader spans the whole flow with live phase lines: `Gathering context…` → `Memory pre-flight: agent persisting session learnings… (Xs)` (elapsed ticks per second) → `Snapshotting context (N messages, X chars)…` → generation. Escape still cancels. |
+| Model display & streaming counts | Shows which model generates the prompt — `Generating with provider/model (effort: …)` — plus a `fallback: …` line naming the model actually used when the configured one is unavailable, and live output counters as it streams (`thinking… 1.2k`, `writing… 2.3k chars`). After saving, the notify reports `generated with <model-id> in Xs`. |
 | Diary reminder | Before the handoff prompt is generated, nudges the agent (one injected suggestion) to persist durable session learnings to MemPalace via `mempalace_diary_write`. The agent skips on its own if it already wrote a diary entry this session or nothing is worth recording. Requires the `mempalace_diary_write` tool to be active; disable with `handoff.diaryReminder: false`. |
 | Terminal multiplexer support | Auto-submits the handoff via **tmux** or **herdr** based on config — no manual Enter needed. |
 | Herdr shared memory | When using herdr, stores pane/workspace/tab context to `~/.pi/agent/.herdr-handoff-context.json` so other extensions can locate this session. |
@@ -88,6 +90,22 @@ Add to your pi profile's `package.json`:
 ```
 
 The agent can also call `request_handoff` as a tool to trigger the flow programmatically.
+
+### Progress phases
+
+While the handoff runs, a single loader shows each phase as it happens — no more silent waits:
+
+```text
+Gathering context…
+Memory pre-flight: agent persisting session learnings… (12s)   ← ticks every second
+Snapshotting context (42 messages, 18.4k chars)…
+Generating handoff prompt · context: 18.4k
+Generating with deepseek/deepseek-v4-flash (effort: low)
+Generating with deepseek/deepseek-v4-flash · thinking… 1.2k
+Generating with deepseek/deepseek-v4-flash · writing… 2.3k chars
+```
+
+The generation model (and effort level) is always shown before generation starts; if the configured handoff model is unavailable, a `fallback: <model-id>` line names the model actually used. Press Escape at any point to cancel (`prompt: null`, no session created).
 
 ### Diary reminder
 

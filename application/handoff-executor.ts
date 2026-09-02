@@ -18,6 +18,7 @@ import type {
 } from "@earendil-works/pi-coding-agent";
 import type {
 	HandoffOriginData,
+	HandoffPromptResult,
 	HandoffSettings,
 	TuiHandoffCompletedPayload,
 } from "../domain/types";
@@ -33,16 +34,23 @@ import {
 	captureTerminalContext,
 	type TerminalContext,
 } from "../infrastructure/terminal-strategy";
+import { hasHandoffableConversation } from "../infrastructure/session-adapter";
 import {
 	emitCommandStart,
 	emitCommandComplete,
 } from "../infrastructure/event-channels";
+import { HandoffLoader } from "../ui/handoff-loader";
 
 export interface HandoffCommandArgs {
 	rawArgs: string;
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────
+
+/** Compact k-notation for progress lines (1234 → "1.2k"). */
+function formatK(n: number): string {
+	return n < 1000 ? String(n) : `${(n / 1000).toFixed(1)}k`;
+}
 
 async function maybeSuggestCompaction(
 	ctx: ExtensionCommandContext,
@@ -234,8 +242,10 @@ export async function executeHandoff(
 
 	await maybeSuggestCompaction(ctx);
 
-	const initial = gatherHandoffContext(ctx);
-	if (!initial.hasConversation) {
+	// Cheap gate: only proceed when the session has a handoffable conversation
+	// (≥1 user/assistant message) — no full context build here. The full gather
+	// happens once, below, after the memory pre-flight.
+	if (!hasHandoffableConversation(ctx)) {
 		ctx.ui.notify("No conversation to hand off", "error");
 		emitCommandComplete(pi, {
 			goal,
@@ -245,27 +255,113 @@ export async function executeHandoff(
 		return;
 	}
 
-	// Nudge the agent to persist durable learnings to MemPalace before the
-	// handoff prompt is generated — while this session and its memory tools
-	// are still live. Best-effort: never blocks or breaks the handoff.
-	await maybeRunDiaryReminder(pi, ctx, settings);
+	// ONE continuous loader spanning memory pre-flight → snapshot → generation,
+	// so every phase (including the diary wait) is visible with live progress.
+	let gathered: GatheredContext | undefined;
 
-	// Re-gather so the handoff snapshot includes the diary turn and the leaf
-	// label lands on the true handoff point (the nudge appended entries).
-	const gathered = gatherHandoffContext(ctx);
+	const generated = await ctx.ui.custom<HandoffPromptResult>(
+		(tui, theme, _kb, done) => {
+			// Current phase line; `timed` phases get an elapsed "(Xs)" suffix.
+			let phaseLine = "Gathering context…";
+			let phaseStartedAt = Date.now();
+			let phaseTimed = false;
+			let settled = false;
+			let ticker: ReturnType<typeof setInterval> | undefined;
 
-	const generated = await generateHandoffPrompt(
-		ctx,
-		{
-			goal,
-			conversationText: gathered.context.conversationText,
-			todos: gathered.context.todos,
-			git: gathered.context.git,
-			skills: gathered.context.skills,
-			cwd: gathered.context.cwd,
-			contextUsage: gathered.context.contextUsage,
+			const render = () => {
+				if (settled) return;
+				if (phaseTimed) {
+					const secs = Math.floor((Date.now() - phaseStartedAt) / 1000);
+					loader.setLine(`${phaseLine} (${secs}s)`);
+				} else {
+					loader.setLine(phaseLine);
+				}
+			};
+
+			const setPhase = (line: string, timed = false) => {
+				phaseLine = line;
+				phaseStartedAt = Date.now();
+				phaseTimed = timed;
+				render();
+			};
+
+			// Single settle point: clears the ticker on every exit path
+			// (success, abort, error, cancel) exactly once.
+			const finish = (result: HandoffPromptResult) => {
+				if (settled) return;
+				settled = true;
+				if (ticker !== undefined) clearInterval(ticker);
+				done(result);
+			};
+
+			const loader = new HandoffLoader(tui, theme, "Gathering context…", () =>
+				finish({ prompt: null }),
+			);
+
+			ticker = setInterval(render, 1000);
+
+			const run = async (): Promise<HandoffPromptResult> => {
+				try {
+					// Nudge the agent to persist durable learnings to MemPalace before
+					// the handoff prompt is generated — while this session and its
+					// memory tools are still live. Best-effort: never blocks or breaks
+					// the handoff.
+					await maybeRunDiaryReminder(pi, ctx, settings, (status) =>
+						setPhase(status, true),
+					);
+					phaseTimed = false;
+
+					if (loader.signal.aborted) return { prompt: null };
+
+					// Re-gather so the handoff snapshot includes the diary turn and the
+					// leaf label lands on the true handoff point (the nudge appended
+					// entries).
+					gathered = gatherHandoffContext(ctx);
+					const messageCount = gathered.context.messageCount;
+					const chars = formatK(gathered.context.conversationText.length);
+					setPhase(
+						messageCount == null
+							? `Snapshotting context (${chars} chars)…`
+							: `Snapshotting context (${messageCount} messages, ${chars} chars)…`,
+					);
+
+					if (loader.signal.aborted) return { prompt: null };
+
+					return await generateHandoffPrompt(
+						ctx,
+						{
+							goal,
+							conversationText: gathered.context.conversationText,
+							todos: gathered.context.todos,
+							git: gathered.context.git,
+							skills: gathered.context.skills,
+							cwd: gathered.context.cwd,
+							contextUsage: gathered.context.contextUsage,
+						},
+						settings,
+						(status) => setPhase(status),
+						loader.signal,
+					);
+				} finally {
+					if (ticker !== undefined) clearInterval(ticker);
+				}
+			};
+
+			run()
+				.then(finish)
+				.catch((err) => {
+					console.error("Handoff flow failed:", err);
+					finish({
+						prompt: null,
+						error:
+							err instanceof Error
+								? err.message
+								: `Handoff flow failed: ${String(err)}`,
+					});
+				});
+
+			return loader;
 		},
-		settings,
 	);
 
 	if (generated.error) {
@@ -290,6 +386,19 @@ export async function executeHandoff(
 			);
 		}
 		emitCommandComplete(pi, { goal, quickMode: isQuick, error: msg });
+		return;
+	}
+
+	if (!gathered) {
+		// Unreachable in practice: every non-cancelled, non-error result passed
+		// through the gather step. Kept so downstream code never sees undefined
+		// context.
+		ctx.ui.notify("Handoff failed: context was not gathered", "error");
+		emitCommandComplete(pi, {
+			goal,
+			quickMode: isQuick,
+			error: "Context was not gathered",
+		});
 		return;
 	}
 
@@ -321,7 +430,16 @@ export async function executeHandoff(
 	// Save artifact
 	const handoffDocPath = await saveHandoffArtifact(finalPrompt);
 	if (handoffDocPath) {
-		ctx.ui.notify(`Handoff document saved: ${handoffDocPath}`, "info");
+		const stats: string[] = [];
+		if (generated.modelId) stats.push(`generated with ${generated.modelId}`);
+		if (generated.durationMs != null) {
+			stats.push(`in ${(generated.durationMs / 1000).toFixed(1)}s`);
+		}
+		const statLine = stats.length > 0 ? ` · ${stats.join(" ")}` : "";
+		ctx.ui.notify(
+			`Handoff document saved: ${handoffDocPath}${statLine}`,
+			"info",
+		);
 	} else {
 		ctx.ui.notify("Could not save handoff document to temp dir", "warning");
 	}

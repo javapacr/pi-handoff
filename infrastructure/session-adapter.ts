@@ -143,12 +143,27 @@ export function buildConversationText(ctx: ExtensionCommandContext): string {
 	return serializeConversation(convertToLlm(messages));
 }
 
+/**
+ * Cheap gate for /handoff: whether the current session branch contains at
+ * least one user or assistant message — without building conversationText.
+ */
+export function hasHandoffableConversation(
+	ctx: ExtensionCommandContext,
+): boolean {
+	const branch = ctx.sessionManager.getBranch();
+	return getHandoffMessages(branch).some(
+		(m) => m.role === "user" || m.role === "assistant",
+	);
+}
+
 export function buildHandoffContext(
 	ctx: ExtensionCommandContext,
 ): HandoffContext {
 	const branch = ctx.sessionManager.getBranch();
+	const messages = getHandoffMessages(branch);
 	return {
-		conversationText: buildConversationText(ctx),
+		conversationText: serializeConversation(convertToLlm(messages)),
+		messageCount: messages.length,
 		todos: extractTodos(branch),
 		git: null, // populated separately by the git client
 		skills: extractSkillList(ctx),

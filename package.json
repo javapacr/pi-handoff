@@ -1,6 +1,6 @@
 {
   "name": "pi-handoff",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Context handoff for pi — transfer session context to a new focused session via LLM-generated prompts",
   "keywords": [
     "pi-package",

@@ -123,6 +123,8 @@ export interface ContextUsage {
 
 export interface HandoffContext {
 	conversationText: string;
+	/** Number of messages in the gathered session branch (user/assistant/tool results). */
+	messageCount?: number;
 	todos: string | null;
 	git: GitContext | null;
 	skills: string | null;
@@ -133,6 +135,14 @@ export interface HandoffContext {
 export interface HandoffPromptResult {
 	prompt: string | null;
 	error?: string;
+	/** Id of the model that produced the prompt (on success). */
+	modelId?: string;
+	/** Provider of the model that produced the prompt (on success). */
+	modelProvider?: string;
+	/** Wall-clock duration of the generation attempt span, in ms (on success). */
+	durationMs?: number;
+	/** Length of the generated prompt, in characters (on success). */
+	outputChars?: number;
 }
 
 /**

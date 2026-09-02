@@ -47,6 +47,7 @@ export async function maybeRunDiaryReminder(
 	pi: ExtensionAPI,
 	ctx: ExtensionCommandContext,
 	settings: HandoffSettings | null,
+	onStatus?: (status: string) => void,
 ): Promise<void> {
 	try {
 		// Opt-out switch (absent = enabled).
@@ -63,6 +64,7 @@ export async function maybeRunDiaryReminder(
 
 		// followUp queues behind a running turn; when idle it triggers one.
 		pi.sendUserMessage(DIARY_REMINDER_NUDGE, { deliverAs: "followUp" });
+		onStatus?.("Memory pre-flight: agent persisting session learnings…");
 
 		let timedOut = false;
 		let timer: ReturnType<typeof setTimeout> | undefined;
@@ -80,6 +82,7 @@ export async function maybeRunDiaryReminder(
 		}
 
 		if (timedOut) {
+			onStatus?.("Memory pre-flight still running — continuing");
 			ctx.ui.notify(
 				"Diary reminder turn still running — continuing handoff",
 				"info",
