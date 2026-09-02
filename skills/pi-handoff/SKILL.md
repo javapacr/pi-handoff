@@ -6,29 +6,35 @@ description: Hand off the current session's context to a new focused session. Us
 # pi-handoff — session handoff flow
 
 You are handing this session's context to a NEW focused session. The handoff
-document is the bridge: the new session starts with it pre-seeded, and its
-first live instruction is the document's `## Next Task` section.
+document is the bridge: the new session is seeded with a reference to it (and
+told to read it), and its first live instruction is the document's
+`## Next Task` section.
 
-## The flow (in-session mode)
+## The flow (in-session mode — the `continue` tool is registered)
 
-1. **Trigger** — one of:
-   - The user runs `/handoff [goal]`. The extension injects ONE instruction
-     turn into THIS session: it tells you the goal (if any), the exact output
-     path, and embeds the output template. Follow it.
-   - You decide a handoff is needed (or the user asks in prose): call the
-     `request_handoff` tool with the user's goal verbatim — do NOT research or
-     summarize first. It pre-fills `/handoff <goal>` in the TUI; it auto-runs.
-     The injected instruction turn then arrives in this session.
-2. **Write the document** — write it to the EXACT path from the instruction
-   (the parent directory already exists). The file contains ONLY the document:
-   no preamble, no code fences, no closing remarks.
+When the user asks for a handoff (or you propose one and they agree):
+
+1. **Pick the document path.** Data dir:
+   `$PI_CODING_AGENT_DIR/data/pi-handoff/` (resolve `PI_CODING_AGENT_DIR`
+   from the environment; default `~/.pi/agent`). `mkdir -p` it, then use
+   `handoff-<timestamp>.md` — ISO-8601 timestamp with colons/dots as dashes
+   (e.g. `handoff-2026-09-02T18-30-00-000Z.md`; this keeps `/continue`'s
+   newest-doc lookup correct).
+2. **Write the document** to that exact path. The file contains ONLY the
+   document: no preamble, no code fences, no closing remarks. Follow the
+   document contract below.
 3. **Call the `continue` tool** with `{"docPath": "<the exact path>"}`. It
-   validates the document and pre-fills the TUI with the `/continue <docPath>`
-   launch command. If it reports the document is invalid (missing or empty
-   `## Next Task`), fix the file and call it again — this is the repair loop.
-4. **Stop** — after `continue` succeeds, no further tool calls; keep any reply
-   to one short line. The user confirms the launch (or herdr/tmux auto-submits
-   it), and the new session starts with your `## Next Task`.
+   validates the document and fills the TUI input with
+   `/continue <docPath>`. If it reports the document is invalid (missing or
+   empty `## Next Task`), fix the file and call it again — the repair loop.
+4. **Stop** — after `continue` succeeds, no further tool calls; keep any
+   reply to one short line. The user confirms the launch (or herdr/tmux
+   auto-submits it), and the new session starts with your `## Next Task`.
+
+Note: this session may itself have been started from a previous handoff (a
+"Handoff Context" message with a document path). That does not change
+anything — the new handoff covers the whole conversation, including that
+context.
 
 ## Document contract
 
@@ -65,7 +71,9 @@ Invoke on start: skill-a, skill-b
 This is a handoff from a previous session. Phase adherence as defined in the system prompt is mandatory — classify this request through CLASSIFICATION and follow the appropriate phase workflow. Do not skip phases.
 ```
 
-This template mirrors `domain/handoff-template.ts` (`HANDOFF_OUTPUT_TEMPLATE`) — keep the two in sync. The detached mode's system prompt embeds the same template from that constant.
+This template mirrors `domain/handoff-template.ts` (`HANDOFF_OUTPUT_TEMPLATE`)
+— keep the two in sync. The detached mode's system prompt embeds the same
+template from that constant.
 
 Non-negotiable rules:
 
@@ -76,6 +84,10 @@ Non-negotiable rules:
   actual WORK to continue — never instructions about the handoff itself, never
   "verify the handoff", never meta-commentary. If a goal was given, the Next
   Task serves that goal.
+- **`## Phase Adherence`** — write the paragraph verbatim as shown. The
+  extension appends its own canonical copy to the live message regardless;
+  keeping the document consistent still matters.
+- Do NOT write anything after `## Phase Adherence`.
 
 ## The `continue` tool
 
@@ -85,19 +97,26 @@ Non-negotiable rules:
 - **Validate-first**: it re-reads the file and rejects it (isError result) if
   `## Next Task` is missing or empty. Repair and re-call.
 - **After success**: stop. Auto-submit (herdr/tmux) or the user's Enter runs
-  `/continue`, which creates the new session with your document.
+  `/continue`, which creates the new session — seeded with the document path
+  (the doc is NOT pre-loaded; the new session reads it from disk) — and sends
+  your `## Next Task` plus the canonical Phase Adherence as its live message.
 
-## `/continue [docPath]`
+## `/continue [docPath | text]`
 
-Creates the new session from a written handoff document: `docPath` optional —
-with no argument it uses the NEWEST `handoff-*.md` in the handoff data dir
-(`$PI_CODING_AGENT_DIR/data/pi-handoff/`). Useful for manual recovery when
-auto-submit missed. It re-validates `## Next Task` before launching.
+- `/continue <docPath>` — launch from a written handoff document (what the
+  `continue` tool pre-fills). Re-validates before launching.
+- `/continue <text>` — no handoff involved: the text is sent AS-IS as a new
+  session's live message. Useful whenever the user wants to continue in a
+  fresh session with a specific instruction.
+- `/continue` (no argument) — uses the newest `handoff-*.md` in the data dir
+  (manual recovery when auto-submit missed).
 
 ## Detached mode (`handoff.type: "detached"`, the default)
 
-Without in-session mode, `/handoff` serializes the session and generates the
-doc in a separate LLM call (honouring `handoff.provider`/`model`/`effort`
-settings) — you are not involved in generation. `request_handoff` and
-`/continue` behave the same. The `continue` tool is only registered in
-in-session mode.
+Without in-session mode, the `continue` tool is NOT registered and you cannot
+produce the document yourself. `/handoff [goal]` serializes the session and
+generates the doc in a separate LLM call (honouring
+`handoff.provider`/`model`/`effort` settings), opens it in an editor review,
+then creates the new session. `request_handoff` is the agent-callable trigger
+for that flow: call it with the user's goal verbatim — fire-and-forget, do
+not research first — and stop after calling.

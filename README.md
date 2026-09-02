@@ -6,12 +6,12 @@ Context handoff for the [pi coding agent](https://github.com/earendil-works/pi) 
 
 | Feature | Description |
 | ------- | ----------- |
-| `request_handoff` tool | Agent-callable tool that pre-fills the `/handoff` command with a goal string. Fire-and-forget — sets the TUI editor text and stops. |
-| `/handoff` command | Interactive slash command that collects session context and generates a handoff prompt for review. |
-| `/handoff!` quick mode | Skip the editor review step — generate and output the handoff prompt immediately. |
+| `request_handoff` tool | Detached mode only. Agent-callable tool that pre-fills the `/handoff` command with a goal string. Fire-and-forget — sets the TUI editor text and stops. |
+| `/handoff` command | Detached mode only. Interactive slash command that collects session context and generates a handoff prompt for review. |
+| `/handoff!` quick mode | Detached mode only. Skip the editor review step — generate and output the handoff prompt immediately. |
 | Streaming progress loader | One continuous loader spans the whole flow with live phase lines: `Gathering context…` → `Memory pre-flight: agent persisting session learnings… (Xs)` (elapsed ticks per second) → `Snapshotting context (N messages, X chars)…` → generation. Escape still cancels. |
 | Model display & streaming counts | Shows which model generates the prompt — `Generating with provider/model (effort: …)` — plus a `fallback: …` line naming the model actually used when the configured one is unavailable, and live output counters as it streams (`thinking… 1.2k`, `writing… 2.3k chars`). After saving, the notify reports `generated with <model-id> in Xs`. |
-| Diary reminder | Before the handoff prompt is generated, nudges the agent (one injected suggestion) to persist durable session learnings to MemPalace via `mempalace_diary_write`. The agent skips on its own if it already wrote a diary entry this session or nothing is worth recording. Requires the `mempalace_diary_write` tool to be active; disable with `handoff.diaryReminder: false`. |
+| Diary reminder | Detached mode only. Before the handoff prompt is generated, nudges the agent (one injected suggestion) to persist durable session learnings to MemPalace via `mempalace_diary_write`. The agent skips on its own if it already wrote a diary entry this session or nothing is worth recording. Requires the `mempalace_diary_write` tool to be active; disable with `handoff.diaryReminder: false`. |
 | Terminal multiplexer support | Auto-submits the handoff via **tmux** or **herdr** based on config — no manual Enter needed. |
 | Herdr shared memory | When using herdr, stores pane/workspace/tab context to `~/.pi/agent/.herdr-handoff-context.json` so other extensions can locate this session. |
 | Lifecycle events | Emits `handoff_tool_start/end`, `handoff_command_start/complete` events on the event bus for other extensions to react to. |
@@ -28,13 +28,13 @@ Context handoff for the [pi coding agent](https://github.com/earendil-works/pi) 
 
 ```text
 index.ts                          Entry point — mode-selecting registration
+├── skills/
+│   └── pi-handoff/               Shipped skill — primary agent instructions
 ├── tools/
-│   ├── request-handoff.ts        request_handoff tool registration
-│   ├── continue.ts               continue tool — fills TUI with /continue (in-session mode)
-│   └── skills/pi-handoff/        Shipped skill — primary agent instructions
+│   ├── request-handoff.ts        request_handoff tool registration (detached only)
+│   └── continue.ts               continue tool — fills TUI with /continue (in-session mode)
 ├── commands/
 │   ├── handoff.ts                /handoff command — detached registration
-│   ├── handoff-in-session.ts     /handoff command — in-session registration
 │   └── continue.ts               /continue command (in-session mode)
 ├── application/
 │   ├── context-gatherer.ts       Collects git state, session history, tasks
@@ -96,7 +96,9 @@ Add to your pi profile's `package.json`:
 /handoff!                     Quick mode — skip editor, output immediately
 ```
 
-The agent can also call `request_handoff` as a tool to trigger the flow programmatically.
+`/handoff` (and `/handoff!`) is **detached mode only** (the default). The agent can also call `request_handoff` as a tool to trigger that flow programmatically.
+
+In **in-session mode** (`handoff.type: "in-session"`) there is no `/handoff` command — just ask for a handoff in natural language and the agent follows the shipped `pi-handoff` skill: it picks the document path, writes the document, and calls the `continue` tool, which fills the TUI with `/continue <docPath>`.
 
 ### Progress phases
 
@@ -135,7 +137,7 @@ Add an optional `handoff` block to your pi `settings.json` (`~/.pi/agent/setting
 
 | Option | Type | Default | Description |
 | ------ | ---- | ------- | ----------- |
-| `type` | `"detached"` \| `"in-session"` | `"detached"` | Generation path for `/handoff`. Selected once at startup — changing it requires a session restart. See [In-session mode](#in-session-mode-handofftype-in-session). |
+| `type` | `"detached"` \| `"in-session"` | `"detached"` | Generation path for the handoff flow. Selected once at startup — changing it requires a session restart. See [In-session mode](#in-session-mode-handofftype-in-session). |
 | `provider` | `string` | — | Provider id for the handoff generation model (e.g. `"deepseek"`, `"amazon-bedrock"`). Detached mode only. |
 | `model` | `string` | — | Model id for generation. Bare id when `provider` is set, or `provider/model` reference. Detached mode only. |
 | `effort` | `string` | — | Thinking level for generation (`"low"`, `"medium"`, `"high"`). |
@@ -149,7 +151,7 @@ Add an optional `handoff` block to your pi `settings.json` (`~/.pi/agent/setting
 
 ### In-session mode (`handoff.type: "in-session"`)
 
-When the summarizer IS the session model (e.g. Sonnet-only profiles), a detached handoff re-sends the serialized conversation at full input rates. In-session mode instead injects one instruction turn into the LIVE session: the session's own model — with the full history already in its prompt cache — writes the handoff document to
+When the summarizer IS the session model (e.g. Sonnet-only profiles), a detached handoff re-sends the serialized conversation at full input rates. In-session mode is instead **fully agent-driven — the shipped pi-handoff skill instructs the agent to write the document and call the continue tool; no instruction turn is injected and no `/handoff` command exists in this mode**. The session's own model — with the full history already in its prompt cache — writes the handoff document to
 
 ```
 $PI_CODING_AGENT_DIR/data/pi-handoff/handoff-<timestamp>.md
@@ -157,7 +159,7 @@ $PI_CODING_AGENT_DIR/data/pi-handoff/handoff-<timestamp>.md
 
 then calls the **`continue`** tool — the final step, only after the document is complete on disk. The tool validates the document (a non-empty `## Next Task` section; on failure it reports what to repair and the agent fixes the file — a self-healing loop) and fills the TUI input with `/continue <docPath>`. Press Enter (or let herdr/tmux auto-submit after the turn ends) and the new session starts with the Next Task — the same session-creation path the detached flow uses.
 
-The **pi-handoff skill** (shipped with the extension) is the primary instruction source for agents performing handoffs: the flow, the document contract, the exact output template, and how to use `continue`. The injected instruction turn is deliberately thin — goal, skill pointer, target path — and embeds the redaction rule as a safety net. The `## Phase Adherence` section of the continuation prompt is owned by the extension (canonical text appended by the tool), so model-authored variants never leak into the new session's first message.
+The **pi-handoff skill** (shipped with the extension) is the primary instruction source for agents performing handoffs: the flow, the document contract, the exact output template, and how to use `continue`. The `## Phase Adherence` section of the continuation prompt is owned by the extension (canonical text appended by the tool), so model-authored variants never leak into the new session's first message.
 
 Notes:
 

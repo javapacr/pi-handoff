@@ -15,7 +15,7 @@ import type {
 	ExtensionAPI,
 	ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
-import type { HandoffMode, TuiFilledHandoffPayload } from "../domain/types";
+import type { TuiFilledHandoffPayload } from "../domain/types";
 import { resolveTerminalMode } from "../infrastructure/terminal-strategy";
 import { emitToolStart, emitToolEnd } from "../infrastructure/event-channels";
 
@@ -24,16 +24,7 @@ export interface RequestHandoffDetails {
 	suggestedCommand: string;
 }
 
-export function registerRequestHandoffTool(
-	pi: ExtensionAPI,
-	options?: { mode?: HandoffMode },
-): void {
-	const mode = options?.mode ?? "detached";
-	const modeNote =
-		mode === "in-session"
-			? "Running /handoff injects the generation turn into this session; the agent writes the doc and the continue tool queues the new session."
-			: "Running /handoff generates the prompt in a detached LLM call and creates the new session.";
-
+export function registerRequestHandoffTool(pi: ExtensionAPI): void {
 	pi.registerTool({
 		name: "request_handoff",
 		label: "Request Handoff",
@@ -43,7 +34,8 @@ export function registerRequestHandoffTool(
 			"Do NOT research, summarize, or prepare context. The /handoff command itself " +
 			"gathers all context and generates the handoff prompt. Just pass the goal " +
 			"verbatim and stop. " +
-			modeNote,
+			"Running /handoff generates the prompt in a detached LLM call and creates the new session. " +
+			"(Detached mode only — this tool is not registered in in-session mode.)",
 		// Mechanics are mode-agnostic — the pre-registered /handoff command
 		// handler owns whatever the mode does; this tool just types the command.
 		promptSnippet: "Pre-fill /handoff command — no research needed",

@@ -69,7 +69,7 @@ export function registerContinueTool(pi: ExtensionAPI): void {
 				docPath: {
 					type: "string",
 					description:
-						"Path to the handoff document, exactly as given in the handoff instruction.",
+						"Path to the handoff document you wrote (per the pi-handoff skill path convention).",
 				},
 			},
 			required: ["docPath"],
@@ -92,8 +92,8 @@ export function registerContinueTool(pi: ExtensionAPI): void {
 				const message = err instanceof Error ? err.message : String(err);
 				return errorResult(
 					`Handoff document not readable at ${docPath}: ${message}. ` +
-						`Write the handoff document to that exact path (the parent directory ` +
-						`already exists), then call continue again.`,
+						`Write the handoff document to that exact path (create the parent ` +
+						`directory if needed), then call continue again.`,
 					docPath,
 				);
 			}

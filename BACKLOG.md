@@ -98,6 +98,10 @@ per mode.
   sends the text AS-IS to a new session — no handoff machinery — so the
   command doubles as a general "continue in a fresh session" tool.
   Disambiguation between a docPath and literal text is existence-based.
+- `/handoff` and `request_handoff` removed from the in-session branch
+  (2026-09-02, user — the skill makes the command redundant: the user asks
+  the LLM directly and the agent follows the skill). Detached mode keeps
+  both unchanged.
 
 ### Known limitations (reviewed 2026-09-02, oracle pass — non-blocking)
 
