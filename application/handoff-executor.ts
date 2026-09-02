@@ -17,7 +17,6 @@ import type {
 	ExtensionCommandContext,
 } from "@earendil-works/pi-coding-agent";
 import type {
-	HandoffOriginData,
 	HandoffPromptResult,
 	HandoffSettings,
 	TuiHandoffCompletedPayload,
@@ -29,6 +28,7 @@ import {
 import type { GatheredContext } from "./context-gatherer";
 import { generateHandoffPrompt } from "./prompt-generator";
 import { gatherHandoffContext } from "./context-gatherer";
+import { createHandoffSession } from "./session-creator";
 import { maybeRunDiaryReminder } from "./diary-reminder";
 import {
 	captureTerminalContext,
@@ -135,80 +135,6 @@ async function saveHandoffArtifact(finalPrompt: string): Promise<string> {
 	} catch {
 		return "";
 	}
-}
-
-/**
- * Create the new handoff session with pre-seeded context and live message.
- *
- * Handles: labeling the old session, setting up the new session with
- * handoff context, and sending the initial message.
- *
- * Returns `"ok"` on success, `"cancelled"` if the user cancelled, or
- * throws on error.
- */
-async function createHandoffSession(
-	pi: ExtensionAPI,
-	ctx: ExtensionCommandContext,
-	gathered: GatheredContext,
-	opts: {
-		goal: string | null;
-		sessionTitle: string;
-		contextBlock: string;
-		liveMessage: string;
-	},
-): Promise<"ok" | "cancelled"> {
-	const { goal, sessionTitle, contextBlock, liveMessage } = opts;
-	const currentSessionFile = gathered.currentSessionFile;
-
-	// Label the handoff point in the OLD session
-	if (gathered.leafId) {
-		try {
-			pi.setLabel(gathered.leafId, `handoff → ${sessionTitle}`);
-		} catch {
-			// not critical
-		}
-	}
-
-	const newSessionResult = await ctx.newSession({
-		parentSession: currentSessionFile,
-
-		setup: async (sm) => {
-			sm.appendSessionInfo(sessionTitle);
-
-			if (contextBlock) {
-				sm.appendMessage({
-					role: "user",
-					content: [
-						{
-							type: "text",
-							text: `## Handoff Context (previous session)\n\n${contextBlock}`,
-						},
-					],
-					timestamp: Date.now() - 1000,
-				});
-			}
-
-			sm.appendMessage({
-				role: "custom",
-				customType: "handoff-origin",
-				content: `Handed off from: ${currentSessionFile ?? "unknown session"}`,
-				display: false,
-				details: {
-					parentSession: currentSessionFile,
-					goal,
-					timestamp: Date.now(),
-				} satisfies HandoffOriginData,
-				timestamp: Date.now(),
-			});
-		},
-
-		withSession: async (replacementCtx) => {
-			await replacementCtx.sendUserMessage(liveMessage);
-			replacementCtx.ui.notify("Handoff started", "info");
-		},
-	});
-
-	return newSessionResult.cancelled ? "cancelled" : "ok";
 }
 
 // ── Main orchestrator ─────────────────────────────────────────────────────
@@ -450,12 +376,20 @@ export async function executeHandoff(
 
 	// Create new session
 	try {
-		const result = await createHandoffSession(pi, ctx, gathered, {
-			goal,
-			sessionTitle,
-			contextBlock,
-			liveMessage: nextTask || finalPrompt,
-		});
+		const result = await createHandoffSession(
+			pi,
+			ctx,
+			{
+				currentSessionFile: gathered.currentSessionFile,
+				leafId: gathered.leafId,
+			},
+			{
+				goal,
+				sessionTitle,
+				contextBlock,
+				liveMessage: nextTask || finalPrompt,
+			},
+		);
 
 		if (result === "cancelled") {
 			ctx.ui.notify("New session cancelled", "info");

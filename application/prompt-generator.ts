@@ -18,6 +18,11 @@ import type {
 } from "../domain/types";
 import { generateWithModel } from "../infrastructure/llm-client";
 import { HandoffLoader } from "../ui/handoff-loader";
+import {
+	HANDOFF_CRITICAL_RULES,
+	HANDOFF_OUTPUT_TEMPLATE,
+	handoffGoalBlock,
+} from "../domain/handoff-template";
 
 /**
  * Match a model reference against the available models.
@@ -97,20 +102,13 @@ function resolveHandoffModel(
 }
 
 function buildSystemPrompt(goal: string | null): string {
-	const goalBlock = goal
-		? `The user has indicated the next session should focus on: "${goal}". Tailor the entire handoff doc toward this goal — emphasise relevant context, de-prioritise unrelated work, and make the next task align with this focus.`
-		: `No explicit goal was provided. Read the conversation and infer the most logical next task or continuation. Use it as the ## Next Task section.`;
-
 	return `You are a context transfer assistant. You receive a conversation history plus structured metadata (todos, git state, loaded skills, working directory, context usage).
 
-${goalBlock}
+${handoffGoalBlock(goal)}
 
 Write a handoff document summarising the current conversation so a fresh agent can continue the work.
 
-CRITICAL RULES:
-1. REDACT all sensitive information — API keys, passwords, tokens, credentials, secrets, and personally identifiable information (PII). Replace with [REDACTED] placeholders. Never reproduce secrets in the output.
-2. Do NOT duplicate content already captured in other artifacts (specs, plans, ADRs, issues, commits, diffs). Reference them by file path or URL instead. Summarise the key decisions or outcomes briefly but point to the source artifact for full detail.
-3. Include a Suggested Skills section recommending skills the new agent should invoke based on the work context and task type.
+${HANDOFF_CRITICAL_RULES}
 
 The output must:
 1. Summarise what was done and what matters (decisions, findings, approaches) — reference specs, plans, ADRs, issues by path/URL instead of reproducing them
@@ -123,34 +121,7 @@ The output must:
 
 Use exactly this output format — omit any section that has no content:
 
-## Context
-[What was done, key decisions, approaches — 3-8 bullet points. Reference specs, plans, ADRs, issues by path/URL instead of duplicating.]
-
-## Git State
-
-### repo-name (/path/to/repo)
-Branch: <branch>
-Recent changes:
-- path/to/file — what changed
-
-Recent commits:
-- abc1234 message
-
-## Active Tasks
-- [ ] pending task
-- [x] completed task
-
-## Suggested Skills
-Invoke on start: skill-a, skill-b
-
-## Working Directory
-/path/to/project
-
-## Next Task
-[Clear, actionable statement of the goal for this new session]
-
-## Phase Adherence
-This is a handoff from a previous session. Phase adherence as defined in the system prompt is mandatory — classify this request through CLASSIFICATION and follow the appropriate phase workflow. Do not skip phases.
+${HANDOFF_OUTPUT_TEMPLATE}
 
 IMPORTANT: Always end with ## Phase Adherence as the final section. Output only the prompt — no preamble, no "Here is the prompt:".`;
 }

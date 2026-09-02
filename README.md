@@ -27,30 +27,36 @@ Context handoff for the [pi coding agent](https://github.com/earendil-works/pi) 
 ## Architecture
 
 ```text
-index.ts                      Entry point — wires tools, commands, events
+index.ts                          Entry point — mode-selecting registration
 ├── tools/
-│   └── request-handoff.ts    request_handoff tool registration
+│   ├── request-handoff.ts        request_handoff tool registration
+│   └── handoff-launch.ts         handoff_launch tool (in-session mode)
 ├── commands/
-│   └── handoff.ts            /handoff slash command
+│   ├── handoff.ts                /handoff command — detached registration
+│   ├── handoff-in-session.ts     /handoff command — in-session registration
+│   └── handoff-launch.ts         /handoff-launch command (in-session mode)
 ├── application/
-│   ├── context-gatherer.ts   Collects git state, session history, tasks
-│   ├── prompt-generator.ts   Builds system/user prompts, resolves model
-│   └── handoff-executor.ts   Orchestrates the full handoff flow
+│   ├── context-gatherer.ts       Collects git state, session history, tasks
+│   ├── prompt-generator.ts       Builds system/user prompts, resolves model
+│   ├── handoff-executor.ts       Orchestrates the detached handoff flow
+│   ├── session-creator.ts        Shared new-session creation (both modes)
+│   └── diary-reminder.ts         MemPalace diary pre-flight
 ├── domain/
-│   ├── types.ts              Core types (HandoffSettings, GitContext, etc.)
-│   └── handoff-prompt.ts     Handoff prompt template
+│   ├── types.ts                  Core types (HandoffSettings, GitContext, etc.)
+│   ├── handoff-prompt.ts         Prompt splitting, Next Task validation
+│   └── handoff-template.ts       Shared output template (both modes)
 ├── infrastructure/
-│   ├── event-registration.ts Hooks into pi lifecycle events
-│   ├── event-channels.ts     Lifecycle event channel names + emit helpers
-│   ├── terminal-strategy.ts  Abstracts tmux/herdr multiplexer selection
-│   ├── tmux-client.ts        Tmux session management
-│   ├── herdr-client.ts       Herdr session management + shared memory
-│   ├── session-adapter.ts    Session file discovery and parsing
-│   ├── llm-client.ts         LLM generation adapter
-│   ├── git-client.ts         Git state extraction
-│   └── config-repository.ts  Settings file loading
+│   ├── event-registration.ts     Hooks into pi lifecycle events
+│   ├── event-channels.ts         Lifecycle event channel names + emit helpers
+│   ├── terminal-strategy.ts      Abstracts tmux/herdr multiplexer selection
+│   ├── tmux-client.ts            Tmux session management
+│   ├── herdr-client.ts           Herdr session management + shared memory
+│   ├── session-adapter.ts        Session file discovery and parsing
+│   ├── llm-client.ts             LLM generation adapter
+│   ├── git-client.ts             Git state extraction
+│   └── config-repository.ts      Settings file loading + agent-dir resolution
 └── ui/
-    └── handoff-loader.ts     Custom TUI loader during generation
+    └── handoff-loader.ts         Custom TUI loader during generation
 ```
 
 ## Install
@@ -128,8 +134,9 @@ Add an optional `handoff` block to your pi `settings.json` (`~/.pi/agent/setting
 
 | Option | Type | Default | Description |
 | ------ | ---- | ------- | ----------- |
-| `provider` | `string` | — | Provider id for the handoff generation model (e.g. `"deepseek"`, `"amazon-bedrock"`). |
-| `model` | `string` | — | Model id for generation. Bare id when `provider` is set, or `provider/model` reference. |
+| `type` | `"detached"` \| `"in-session"` | `"detached"` | Generation path for `/handoff`. Selected once at startup — changing it requires a session restart. See [In-session mode](#in-session-mode-handofftype-in-session). |
+| `provider` | `string` | — | Provider id for the handoff generation model (e.g. `"deepseek"`, `"amazon-bedrock"`). Detached mode only. |
+| `model` | `string` | — | Model id for generation. Bare id when `provider` is set, or `provider/model` reference. Detached mode only. |
 | `effort` | `string` | — | Thinking level for generation (`"low"`, `"medium"`, `"high"`). |
 | `terminal` | `"tmux"` \| `"herdr"` | auto-detect | Which terminal multiplexer to use for auto-submit. When omitted, auto-detects from environment. |
 | `diaryReminder` | `boolean` | `true` | When enabled, `/handoff` nudges the agent to write a MemPalace diary entry (`mempalace_diary_write`) before the handoff prompt is generated. Skipped automatically when the tool is not active. |
@@ -138,6 +145,23 @@ Add an optional `handoff` block to your pi `settings.json` (`~/.pi/agent/setting
 
 - **`"tmux"`** (default): Uses `tmux send-keys` to auto-confirm the editor review overlay and auto-submit the `/handoff` command after `request_handoff`.
 - **`"herdr"`**: Uses `herdr pane send-keys` for the same auto-submit flow. Additionally stores the Herdr pane context (workspace, tab, pane ids) to `~/.pi/agent/.herdr-handoff-context.json` so other extensions can locate this session's Herdr pane.
+
+### In-session mode (`handoff.type: "in-session"`)
+
+When the summarizer IS the session model (e.g. Sonnet-only profiles), a detached handoff re-sends the serialized conversation at full input rates. In-session mode instead injects one instruction turn into the LIVE session: the session's own model — with the full history already in its prompt cache — writes the handoff document to
+
+```
+$PI_CODING_AGENT_DIR/data/pi-handoff/handoff-<timestamp>.md
+```
+
+then calls the **`handoff_launch`** tool. The tool validates the document (a non-empty `## Next Task` section; on failure it reports what to repair and the agent fixes the file — a self-healing loop) and pre-fills the TUI input with `/handoff-launch <docPath>`. Press Enter (or let herdr/tmux auto-submit after the turn ends) and the new session starts with the Next Task — the same session-creation path the detached flow uses.
+
+Notes:
+
+- `provider`/`model`/`effort` are ignored in this mode — generation deliberately uses the session's own model.
+- The instruction embeds the exact same output template as the detached prompt (shared constant in `domain/handoff-template.ts`), so both modes produce identical document shapes.
+- The diary reminder (when enabled and `mempalace_diary_write` is active) is folded into the injected instruction instead of a separate pre-flight turn.
+- `/handoff-launch <docPath>` can also be run manually for recovery, e.g. when auto-submit missed.
 
 ### Lifecycle events
 

@@ -20,7 +20,12 @@ function expandHomeDirectory(
 	return configuredDir;
 }
 
-function resolvePiAgentDir(): string {
+/**
+ * Resolve the pi agent directory (PI_CODING_AGENT_DIR env → ~/.pi/agent),
+ * expanding a leading ~. Exported for the in-session doc path
+ * ($AGENT_DIR/data/pi-handoff/…) and future cost logging.
+ */
+export function resolvePiAgentDir(): string {
 	const configuredDir = process.env.PI_CODING_AGENT_DIR;
 	if (!configuredDir) {
 		return join(homedir(), ".pi", "agent");

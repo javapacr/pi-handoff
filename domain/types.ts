@@ -87,7 +87,22 @@ export interface HandoffOriginData {
  */
 export type TerminalMode = "tmux" | "herdr";
 
+export type HandoffMode = "detached" | "in-session";
+
 export interface HandoffSettings {
+	/**
+	 * Which generation path `/handoff` uses. Selected once at extension
+	 * startup — changing it requires a session restart.
+	 *
+	 * - `"detached"` (default): serialize the session and generate the doc in
+	 *   a one-off LLM call (honours `provider`/`model`/`effort`).
+	 * - `"in-session"`: inject an instruction turn into the live session; the
+	 *   session's own model writes the doc (prompt-cache-aligned, cheaper when
+	 *   the summarizer IS the session model) and calls `handoff_launch` to
+	 *   queue the new session. `provider`/`model`/`effort` are ignored.
+	 */
+	type?: HandoffMode;
+
 	/**
 	 * Provider id for the handoff generation model (e.g. "deepseek").
 	 *

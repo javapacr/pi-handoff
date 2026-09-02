@@ -34,6 +34,19 @@ const DIARY_REMINDER_NUDGE =
 	"[handoff preflight] A session handoff is starting. Before context transfers, consider whether this session produced anything worth persisting to long-term memory: write a MemPalace diary entry (mempalace_diary_write, AAAK format) capturing durable observations, decisions, gotchas, or outcomes — things not already recorded in committed docs, plans, or artifacts. Skip if you already wrote a diary entry for this session or there is nothing durable worth recording. Do not start new work; keep any reply to one short line.";
 
 /**
+ * Whether a MemPalace diary tool is active in this session. Shared by the
+ * detached pre-flight and the in-session instruction builder.
+ */
+export function hasDiaryTool(pi: ExtensionAPI): boolean {
+	// Check both lists: first-class MCP direct tools may surface in only one
+	// of them.
+	return (
+		pi.getActiveTools().includes(DIARY_TOOL_NAME) ||
+		pi.getAllTools().some((tool) => tool.name === DIARY_TOOL_NAME)
+	);
+}
+
+/**
  * Maybe nudge the agent to write a MemPalace diary entry before the handoff.
  *
  * Skips silently when disabled (`handoff.diaryReminder: false` in settings)
@@ -53,14 +66,8 @@ export async function maybeRunDiaryReminder(
 		// Opt-out switch (absent = enabled).
 		if (settings?.diaryReminder === false) return;
 
-		// No memory tool in this session → no nudge, no extra turn. Check both
-		// lists: first-class MCP direct tools may surface in only one of them.
-		const hasDiaryTool =
-			pi.getActiveTools().includes(DIARY_TOOL_NAME) ||
-			pi
-				.getAllTools()
-				.some((tool) => tool.name === DIARY_TOOL_NAME);
-		if (!hasDiaryTool) return;
+		// No memory tool in this session → no nudge, no extra turn.
+		if (!hasDiaryTool(pi)) return;
 
 		// followUp queues behind a running turn; when idle it triggers one.
 		pi.sendUserMessage(DIARY_REMINDER_NUDGE, { deliverAs: "followUp" });
