@@ -82,6 +82,17 @@ export function registerHandoffLaunchCommand(pi: ExtensionAPI): void {
 			const { context: contextBlock } = splitHandoffPrompt(doc);
 			const sessionTitle = deriveSessionTitle(null, nextTask);
 
+			// Emit the completion BEFORE creating the session — once
+			// ctx.newSession() completes, pi invalidates this extension instance
+			// and events.emit throws "stale ctx" (live-probed 2026-09-02).
+			// Cancel/error paths emit after — safe, no replacement happened there.
+			emitCommandComplete(pi, {
+				goal: null,
+				quickMode: true,
+				sessionTitle,
+				artifactPath: docPath,
+			});
+
 			try {
 				const result = await createHandoffSession(
 					pi,
@@ -108,12 +119,8 @@ export function registerHandoffLaunchCommand(pi: ExtensionAPI): void {
 					return;
 				}
 
-				emitCommandComplete(pi, {
-					goal: null,
-					quickMode: true,
-					sessionTitle,
-					artifactPath: docPath,
-				});
+				// Success: completion was emitted pre-replacement; the "Handoff
+				// started" notify comes from withSession's fresh replacement ctx.
 			} catch (err) {
 				const message =
 					err instanceof Error ? err.message : String(err);

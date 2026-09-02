@@ -374,6 +374,19 @@ export async function executeHandoff(
 	const { context: contextBlock, nextTask } = splitHandoffPrompt(finalPrompt);
 	const sessionTitle = deriveSessionTitle(goal, nextTask || finalPrompt);
 
+	// Emit the success-path completion BEFORE creating the session: once
+	// ctx.newSession() completes, pi invalidates this extension instance and
+	// any pi.* call (including events.emit) throws "stale ctx" (live-probed
+	// 2026-09-02: the post-replacement emit was silently lost). Cancel and
+	// error paths below still emit after — safe, because no replacement
+	// happened in those cases, so pi is still valid.
+	emitCommandComplete(pi, {
+		goal,
+		quickMode: isQuick,
+		sessionTitle,
+		artifactPath: handoffDocPath || undefined,
+	});
+
 	// Create new session
 	try {
 		const result = await createHandoffSession(
@@ -401,12 +414,9 @@ export async function executeHandoff(
 			return;
 		}
 
-		emitCommandComplete(pi, {
-			goal,
-			quickMode: isQuick,
-			sessionTitle,
-			artifactPath: handoffDocPath || undefined,
-		});
+		// Success: nothing more to emit here — completion was emitted
+		// pre-replacement above, and the "Handoff started" notify comes from
+		// withSession's fresh replacement ctx.
 	} catch (err) {
 		const errorMsg =
 			err instanceof Error
