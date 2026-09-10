@@ -1,20 +1,14 @@
 /**
  * Session creation application service.
  *
- * Shared by both handoff modes: creates the new session with a handoff
- * document REFERENCE and a live first message.
+ * Creates the new session for the unified continuation flow — called ONLY by
+ * commands/continue.ts (`/continue` and the staged command from the `continue`
+ * tool). The live first message embeds the handoff document path plus an
+ * explicit read-first instruction; the document body is NOT pre-loaded (docs
+ * can be large), the new session pulls the content from disk on demand.
  *
- * The handoff document is NOT pre-loaded into the session — docs can be
- * large. The new session receives the document path plus an explicit
- * instruction to read it, and pulls the content from disk on demand.
- *
- * - detached: called by application/handoff-executor.ts after prompt
- *   generation + editor review.
- * - in-session: called by the `/continue <docPath>` command that the
- *   `continue` tool pre-fills.
- *
- * Handles: labeling the old session's leaf, seeding the document reference,
- * and sending the initial message.
+ * Handles: labeling the old session's leaf, recording the handoff origin
+ * (including the doc path), and sending the initial message.
  */
 
 import type {
@@ -34,7 +28,8 @@ export interface CurrentSessionRef {
 }
 
 /**
- * Create the new handoff session with a document reference and live message.
+ * Create the new handoff session with the live first message and a hidden
+ * `handoff-origin` entry recording the parent session + document path.
  *
  * Returns `"ok"` on success, `"cancelled"` if the user cancelled, or
  * throws on error.
@@ -47,7 +42,12 @@ export async function createHandoffSession(
 		goal: string | null;
 		sessionTitle: string;
 		liveMessage: string;
-		/** Handoff document path — seeded as a read-first reference + origin marker. */
+		/**
+		 * Handoff document path — recorded in the hidden `handoff-origin`
+		 * entry's `details` so session_start can report the origin. The path
+		 * itself travels in the visible live message (via
+		 * `buildContinuationPrompt`), not as a seeded reference.
+		 */
 		artifactPath?: string;
 	},
 ): Promise<"ok" | "cancelled"> {
@@ -68,25 +68,6 @@ export async function createHandoffSession(
 
 		setup: async (sm) => {
 			sm.appendSessionInfo(sessionTitle);
-
-			if (artifactPath) {
-				sm.appendMessage({
-					role: "user",
-					content: [
-						{
-							type: "text",
-							text:
-								`## Handoff Context (previous session)\n\n` +
-								`Handoff document: ${artifactPath}\n\n` +
-								`This file contains the previous session's full handoff ` +
-								`document (what was done, git state, active tasks, suggested ` +
-								`skills, working directory). READ it with the read tool before ` +
-								`acting on the task in the message that follows this one.`,
-						},
-					],
-					timestamp: Date.now() - 1000,
-				});
-			}
 
 			sm.appendMessage({
 				role: "custom",

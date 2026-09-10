@@ -93,15 +93,11 @@ export type HandoffMode = "detached" | "in-session";
 
 export interface HandoffSettings {
 	/**
-	 * Which generation path `/handoff` uses. Selected once at extension
-	 * startup — changing it requires a session restart.
-	 *
-	 * - `"detached"` (default): serialize the session and generate the doc in
-	 *   a one-off LLM call (honours `provider`/`model`/`effort`).
-	 * - `"in-session"`: inject an instruction turn into the live session; the
-	 *   session's own model writes the doc (prompt-cache-aligned, cheaper when
-	 *   the summarizer IS the session model) and calls the `continue` tool to
-	 *   queue the new session. `provider`/`model`/`effort` are ignored.
+	 * @deprecated Parsed for backward compatibility, ignored. The unified flow
+	 * (2026-09-12) registers `/handoff` + `request_handoff` and `/continue` +
+	 * `continue` in EVERY session — this key no longer selects a registration
+	 * path and has no effect. Kept in the parsed shape so existing
+	 * settings.json files load without error; safe to delete from configs.
 	 */
 	type?: HandoffMode;
 
@@ -163,11 +159,15 @@ export interface HandoffPromptResult {
 }
 
 /**
- * Payload emitted on the `tui_filled_handoff` event bus channel when the
- * `request_handoff` tool pre-fills the editor with `/handoff <goal>`.
+ * Payload emitted on the `tui_filled_handoff` event bus channel when a
+ * handoff command is pre-filled in the editor. Emitted by the
+ * `request_handoff` tool (goal = the passed goal string) and by the
+ * `continue` tool / the `/handoff` executor (goal = the session title).
+ * Payload content is informational — the auto-submit listener reads none of
+ * it (it re-captures terminal context at emit time).
  */
 export interface TuiFilledHandoffPayload {
-	/** The goal string passed to `request_handoff`. */
+	/** The goal string passed to `request_handoff`, or the session title. */
 	goal: string;
 	/** The full command pre-filled in the editor (e.g. `/handoff fix the bug`). */
 	command: string;
@@ -239,7 +239,7 @@ export interface HandoffCommandEventPayload {
 	timestamp: number;
 	/** Only on complete: the session title assigned. */
 	sessionTitle?: string;
-	/** Only on complete: path to the saved temp file. */
+	/** Only on complete: path to the saved handoff document (data dir). */
 	artifactPath?: string;
 	/** Only on complete: error message if the handoff failed. */
 	error?: string;

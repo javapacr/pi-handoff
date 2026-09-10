@@ -46,15 +46,25 @@ export function findNextTaskContent(doc: string): string | null {
 }
 
 /**
- * Build the live first message for the new session: the Next Task content
- * plus the CANONICAL Phase Adherence section owned by the extension. Returns
- * null when the document is invalid (missing/empty Next Task) — the caller
- * turns that into the repair-loop result.
+ * Build the live first message for the new session: the handoff document
+ * path (with a read-first instruction), the Next Task content, and the
+ * CANONICAL Phase Adherence section owned by the extension — as ONE visible
+ * message. The document body is NOT embedded; the new session reads it from
+ * disk on demand. Returns null when the document is invalid (missing/empty
+ * Next Task) — the caller turns that into the repair-loop result.
  */
-export function buildContinuationPrompt(doc: string): string | null {
+export function buildContinuationPrompt(
+	doc: string,
+	docPath: string,
+): string | null {
 	const task = findNextTaskContent(doc);
 	if (task === null) return null;
-	return `${task}\n\n${HANDOFF_PHASE_ADHERENCE}`;
+	return (
+		`Handoff document: ${docPath}\n` +
+		`Read it with the read tool before acting.\n\n` +
+		`${task}\n\n` +
+		`${HANDOFF_PHASE_ADHERENCE}`
+	);
 }
 
 /**

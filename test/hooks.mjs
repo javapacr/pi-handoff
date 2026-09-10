@@ -16,7 +16,15 @@ const STUBS = {
 	typebox: new URL("./stub-empty.mjs", import.meta.url).href,
 };
 
+// Relative imports inside the staged tree that cannot run in-process:
+// infrastructure/llm-client.ts opens a real model stream. The executor smoke
+// supplies the generated document through stub-llm-client.mjs instead.
+const LLM_CLIENT_STUB = new URL("./stub-llm-client.mjs", import.meta.url).href;
+
 export async function resolve(specifier, context, next) {
+	if (/\/infrastructure\/llm-client(\.ts)?$/.test(specifier)) {
+		return { url: LLM_CLIENT_STUB, shortCircuit: true };
+	}
 	for (const [pkg, stub] of Object.entries(STUBS)) {
 		if (specifier === pkg || specifier.startsWith(pkg + "/")) {
 			return { url: stub, shortCircuit: true };

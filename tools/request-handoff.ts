@@ -34,8 +34,9 @@ export function registerRequestHandoffTool(pi: ExtensionAPI): void {
 			"Do NOT research, summarize, or prepare context. The /handoff command itself " +
 			"gathers all context and generates the handoff prompt. Just pass the goal " +
 			"verbatim and stop. " +
-			"Running /handoff generates the prompt in a detached LLM call and creates the new session. " +
-			"(Detached mode only — this tool is not registered in in-session mode.)",
+			"Running /handoff generates the prompt in a detached LLM call, saves the " +
+			"handoff document to the data dir, and stages /continue in the editor to " +
+			"launch the new session. This tool is available in every session.",
 		// Mechanics are mode-agnostic — the pre-registered /handoff command
 		// handler owns whatever the mode does; this tool just types the command.
 		promptSnippet: "Pre-fill /handoff command — no research needed",

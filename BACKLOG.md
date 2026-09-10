@@ -2,7 +2,14 @@
 
 ## [backlog] In-session handoff mode — `handoff.type: "in-session"`
 
-**Status:** implemented (2026-09-02). Motivation: when the summarizer IS the
+**Status:** SUPERSEDED 2026-09-12 — the unified flow removed the toggle entirely:
+`handoff.type` is parsed for backward compatibility and IGNORED, and all four
+surfaces (`/handoff`, `request_handoff`, `/continue`, `continue`) register in
+every session. The `/handoff` executor no longer replaces the session — it
+stages `/continue <docPath>` — so the "two clean registrations, selected by
+toggle" split described below no longer exists. Entry kept for its rationale,
+not as a live design. Originally implemented 2026-09-02.
+Motivation: when the summarizer IS the
 session model (e.g. Sonnet-only work profile), generating the handoff doc as a
 turn inside the dying session hits Anthropic prompt-cache reads (~$0.30/M vs
 $3/M) — ≈3–5× cheaper than the detached serialized path, with zero quality
@@ -19,15 +26,15 @@ extension startup by `config-repository.ts`; toggle requires session restart
 
 ```ts
 export default function handoffExtension(pi: ExtensionAPI): void {
-	registerHandoffEvents(pi);
-	const settings = loadHandoffSettings();
-	if (settings?.type === "in-session") {
-		registerHandoffCommandInSession(pi, settings);
-		registerRequestHandoffTool(pi, { mode: "in-session" });
-	} else {
-		registerHandoffCommandDetached(pi, settings); // current executor path, untouched
-		registerRequestHandoffTool(pi, { mode: "detached" });
-	}
+ registerHandoffEvents(pi);
+ const settings = loadHandoffSettings();
+ if (settings?.type === "in-session") {
+  registerHandoffCommandInSession(pi, settings);
+  registerRequestHandoffTool(pi, { mode: "in-session" });
+ } else {
+  registerHandoffCommandDetached(pi, settings); // current executor path, untouched
+  registerRequestHandoffTool(pi, { mode: "detached" });
+ }
 }
 ```
 
@@ -182,3 +189,17 @@ optimization, model choices, etc.).
 - New `infrastructure/cost-logger.ts`; called from `application/prompt-generator.ts`
   where `HandoffPromptResult` (durationMs, outputChars, model ids) is produced.
 - Tests: append behavior, malformed-agent-dir tolerance, one line per attempt.
+
+## [backlog] Command-path orphan `pendingAutoSubmit` — stray Enter into the new session
+
+**Status:** open (observed 2026-09-12 during the unified-flow pane probe; not
+observed to cause harm — pi likely ignores an empty submitted input). The
+staging-phase `tui_filled_handoff` emit arms the agent_end-gated auto-submit,
+but on the `/handoff` command path no agent_end follows (the staged
+`/continue` is submitted by the `tui_handoff_completed` delayed-Enter listener
+instead). The pending flag therefore survives into the next session's first
+turn; when that turn ends within the 30s safety window, one stray Enter is
+sent to the captured pane. Fix options: have the `tui_handoff_completed`
+listener clear the pending flag (touches the pinned
+`infrastructure/event-registration.ts`), or leave as-is if post-rollout
+observation shows no user-visible effect.

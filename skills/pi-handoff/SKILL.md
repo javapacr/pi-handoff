@@ -6,11 +6,29 @@ description: Hand off the current session's context to a new focused session. Us
 # pi-handoff — session handoff flow
 
 You are handing this session's context to a NEW focused session. The handoff
-document is the bridge: the new session is seeded with a reference to it (and
-told to read it), and its first live instruction is the document's
-`## Next Task` section.
+document is the bridge: the new session's first message carries the document
+path (with a read-first instruction), the document's `## Next Task` section,
+and the canonical `## Phase Adherence` — one message, doc body pulled from
+disk on demand.
 
-## The flow (in-session mode — the `continue` tool is registered)
+## Which entry point?
+
+- **Warm/active session (this one)** — follow the flow below: write the
+  document yourself and call the `continue` tool. The session's history is
+  already in the model's prompt cache, so generating the document here is the
+  cheap path.
+- **Cold session, or a context that has grown very long** — do NOT write the
+  document yourself. Tell the user to run `/handoff [goal]` (or call the
+  `request_handoff` tool with their goal verbatim and stop): that path
+  snapshots the session and generates the document in a one-off detached LLM
+  call on the configured `handoff.provider`/`model`/`effort`. A fresh
+  premium-model turn over a cold prefix is expensive there; the detached call
+  is not.
+
+Both entry points end in the same tail: the editor is staged with
+`/continue <docPath>`, and the new session starts from that document.
+
+## The flow (warm/active session — via the `continue` tool)
 
 When the user asks for a handoff (or you propose one and they agree):
 
@@ -110,13 +128,3 @@ Non-negotiable rules:
   fresh session with a specific instruction.
 - `/continue` (no argument) — uses the newest `handoff-*.md` in the data dir
   (manual recovery when auto-submit missed).
-
-## Detached mode (`handoff.type: "detached"`, the default)
-
-Without in-session mode, the `continue` tool is NOT registered and you cannot
-produce the document yourself. `/handoff [goal]` serializes the session and
-generates the doc in a separate LLM call (honouring
-`handoff.provider`/`model`/`effort` settings), opens it in an editor review,
-then creates the new session. `request_handoff` is the agent-callable trigger
-for that flow: call it with the user's goal verbatim — fire-and-forget, do
-not research first — and stop after calling.

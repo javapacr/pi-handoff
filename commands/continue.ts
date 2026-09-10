@@ -1,13 +1,13 @@
 /**
- * /continue command — in-session mode only.
+ * /continue command.
  *
  * Pushes work into a NEW session. Three forms:
  *
- * 1. `/continue <docPath>` — handoff mode (what the `continue` tool
- *    pre-fills): docPath is a handoff document. Seeds a compact reference
- *    (path + read-first instruction — the doc is NOT pre-loaded, it can be
- *    large) and sends the document's Next Task + canonical Phase Adherence
- *    as the live message.
+ * 1. `/continue <docPath>` — handoff mode (what the `continue` tool and the
+ *    detached `/handoff` executor pre-fill): docPath is a handoff document.
+ *    The live first message embeds the doc path (read-first instruction),
+ *    the document's Next Task, and the canonical Phase Adherence — the doc
+ *    body is NOT pre-loaded, it can be large.
  * 2. `/continue <text>` — generic: the text is sent AS-IS as the new
  *    session's live message. Nothing pre-loaded. For any use case where you
  *    want to continue in a fresh session with a specific instruction.
@@ -18,8 +18,8 @@
  * to an existing file, it is treated as a handoff document; otherwise it is
  * sent as literal text.
  *
- * Session creation goes through the shared `createHandoffSession` (same path
- * as the detached flow): leaf label, seeded reference, live first message.
+ * Session creation goes through the shared `createHandoffSession` (leaf
+ * label, hidden handoff-origin entry, live first message).
  */
 
 import { promises as fs } from "node:fs";
@@ -31,6 +31,7 @@ import type {
 import {
 	buildContinuationPrompt,
 	deriveSessionTitle,
+	findNextTaskContent,
 } from "../domain/handoff-prompt";
 import { createHandoffSession } from "../application/session-creator";
 import {
@@ -91,7 +92,7 @@ export function registerContinueCommand(pi: ExtensionAPI): void {
 	});
 }
 
-/** Handoff mode: seed the document reference, live message = Next Task + PA. */
+/** Handoff mode: live message = doc path + Next Task + canonical PA. */
 async function launchFromDoc(
 	pi: ExtensionAPI,
 	ctx: ExtensionCommandContext,
@@ -112,8 +113,8 @@ async function launchFromDoc(
 		}
 	}
 
-	const liveMessage = buildContinuationPrompt(doc);
-	if (liveMessage === null) {
+	const task = findNextTaskContent(doc);
+	if (task === null) {
 		ctx.ui.notify(
 			`Handoff document has no non-empty "## Next Task" section — fix ${docPath} or run /handoff again`,
 			"error",
@@ -126,7 +127,12 @@ async function launchFromDoc(
 		return;
 	}
 
-	const sessionTitle = deriveSessionTitle(null, liveMessage);
+	// Non-null: `task` (checked above) is the same Next Task section this call
+	// re-derives from the same doc, so the null arm is unreachable here.
+	const liveMessage = buildContinuationPrompt(doc, docPath)!;
+	// Title MUST come from the Next Task content, not the live message — the
+	// live message's first line is now the document path (title trap).
+	const sessionTitle = deriveSessionTitle(null, task);
 
 	// Emit the completion BEFORE creating the session — once
 	// ctx.newSession() completes, pi invalidates this extension instance

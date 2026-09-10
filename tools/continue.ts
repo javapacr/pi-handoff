@@ -1,5 +1,5 @@
 /**
- * continue tool — in-session mode only.
+ * continue tool — stages /continue <docPath> for the skill flow.
  *
  * The FINAL step of the handoff: the agent calls it after the handoff
  * document is written and complete on disk. Validates the document — a
@@ -98,7 +98,7 @@ export function registerContinueTool(pi: ExtensionAPI): void {
 				);
 			}
 
-			const liveMessage = buildContinuationPrompt(doc);
+			const liveMessage = buildContinuationPrompt(doc, docPath);
 			if (liveMessage === null) {
 				return errorResult(
 					`Invalid handoff document at ${docPath}: it has no non-empty ` +

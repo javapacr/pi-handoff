@@ -11,6 +11,11 @@ export const serializeConversation = (messages) =>
 			return "";
 		})
 		.join("\n");
-export const DynamicBorder = "─";
+// DynamicBorder is constructed by ui/handoff-loader.ts — keep it a class.
+export class DynamicBorder {
+	constructor(color) {
+		this.color = color;
+	}
+}
 export const keyHint = (k) => k;
 export default {};
