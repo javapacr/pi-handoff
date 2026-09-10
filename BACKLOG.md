@@ -9,6 +9,13 @@ every session. The `/handoff` executor no longer replaces the session — it
 stages `/continue <docPath>` — so the "two clean registrations, selected by
 toggle" split described below no longer exists. Entry kept for its rationale,
 not as a live design. Originally implemented 2026-09-02.
+
+**Addendum (2026-09-12, later the same day):** `request_handoff` removed
+(user decision) — redundant with the `continue` tool (the agent writes the
+document itself per the shipped skill) plus user-typed `/handoff` for the cold
+path. Three surfaces register in every session: `/handoff`, `/continue`,
+`continue`.
+
 Motivation: when the summarizer IS the
 session model (e.g. Sonnet-only work profile), generating the handoff doc as a
 turn inside the dying session hits Anthropic prompt-cache reads (~$0.30/M vs

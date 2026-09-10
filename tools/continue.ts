@@ -4,10 +4,10 @@
  * The FINAL step of the handoff: the agent calls it after the handoff
  * document is written and complete on disk. Validates the document — a
  * non-empty `## Next Task` section — and fills the TUI input with the
- * `/continue <docPath>` command. Same prefill/terminal strategy as
- * `request_handoff`: `ctx.ui.setEditorText` + `tui_filled_handoff`, so the
- * herdr/tmux auto-submit listener sends Enter after the turn ends and the
- * `/continue` command pushes everything into the next session.
+ * `/continue <docPath>` command. The prefill is `ctx.ui.setEditorText` +
+ * `tui_filled_handoff`, so the herdr/tmux auto-submit listener sends Enter
+ * after the turn ends and the `/continue` command pushes everything into the
+ * next session.
  *
  * On validation failure the tool returns an isError result telling the agent
  * exactly what to repair — the self-healing loop re-runs until the doc is
@@ -119,7 +119,7 @@ export function registerContinueTool(pi: ExtensionAPI): void {
 			ctx.ui.setEditorText(command);
 
 			// Notify the auto-submit listener: it sends Enter to the pane after
-			// the agent turn ends (herdr/tmux), same as request_handoff.
+			// the agent turn ends (herdr/tmux).
 			pi.events.emit("tui_filled_handoff", {
 				goal: sessionTitle,
 				command,

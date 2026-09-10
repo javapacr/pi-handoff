@@ -3,11 +3,11 @@
  *
  * Entry point that wires together tools, commands, and event hooks.
  *
- * Unified flow (2026-09-12): every session registers the same four surfaces —
- * the detached `/handoff` command + `request_handoff` tool (cold path: one-off
- * LLM call on `handoff.provider/model` that writes the doc to the handoff data
- * dir) and the `/continue` command + `continue` tool (warm path: the
- * `pi-handoff` skill flow). Both entry points converge on the same tail:
+ * Unified flow (2026-09-12): every session registers the same three surfaces —
+ * the detached `/handoff` command (cold path: one-off LLM call on
+ * `handoff.provider/model` that writes the doc to the handoff data dir) and
+ * the `/continue` command + `continue` tool (warm path: the `pi-handoff`
+ * skill flow). Both entry points converge on the same tail:
  * `/handoff` stages `/continue <docPath>` in the editor, which launches the
  * new session. `handoff.type` is parsed for backward compatibility but
  * ignored (see `domain/types.ts`).
@@ -18,7 +18,6 @@
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { loadHandoffSettings } from "./infrastructure/config-repository";
-import { registerRequestHandoffTool } from "./tools/request-handoff";
 import { registerContinueTool } from "./tools/continue";
 import { registerHandoffCommandDetached } from "./commands/handoff";
 import { registerContinueCommand } from "./commands/continue";
@@ -28,11 +27,10 @@ export default function handoffExtension(pi: ExtensionAPI): void {
  registerHandoffEvents(pi);
 
  // Unified flow: /handoff is available in every session and routes into
- // /continue instead of replacing the session. All four surfaces register
+ // /continue instead of replacing the session. All three surfaces register
  // unconditionally — `handoff.type` no longer selects a registration path.
  const settings = loadHandoffSettings();
  registerHandoffCommandDetached(pi, settings);
- registerRequestHandoffTool(pi);
  registerContinueCommand(pi);
  registerContinueTool(pi);
 }

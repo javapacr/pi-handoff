@@ -94,8 +94,8 @@ export type HandoffMode = "detached" | "in-session";
 export interface HandoffSettings {
 	/**
 	 * @deprecated Parsed for backward compatibility, ignored. The unified flow
-	 * (2026-09-12) registers `/handoff` + `request_handoff` and `/continue` +
-	 * `continue` in EVERY session — this key no longer selects a registration
+	 * (2026-09-12) registers `/handoff`, `/continue`, and `continue` in EVERY
+	 * session — this key no longer selects a registration
 	 * path and has no effect. Kept in the parsed shape so existing
 	 * settings.json files load without error; safe to delete from configs.
 	 */
@@ -161,13 +161,12 @@ export interface HandoffPromptResult {
 /**
  * Payload emitted on the `tui_filled_handoff` event bus channel when a
  * handoff command is pre-filled in the editor. Emitted by the
- * `request_handoff` tool (goal = the passed goal string) and by the
  * `continue` tool / the `/handoff` executor (goal = the session title).
  * Payload content is informational — the auto-submit listener reads none of
  * it (it re-captures terminal context at emit time).
  */
 export interface TuiFilledHandoffPayload {
-	/** The goal string passed to `request_handoff`, or the session title. */
+	/** The session title derived from the document's `## Next Task`. */
 	goal: string;
 	/** The full command pre-filled in the editor (e.g. `/handoff fix the bug`). */
 	command: string;

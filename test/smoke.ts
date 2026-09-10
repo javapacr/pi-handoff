@@ -267,19 +267,14 @@ handoffExtension(s.pi);
 check("type=in-session → /handoff registered", s.commands.has("handoff"));
 check("type=in-session → /continue registered", s.commands.has("continue"));
 check(
-	"type=in-session → request_handoff tool registered",
-	s.tools.has("request_handoff"),
+	"type=in-session → request_handoff tool ABSENT",
+	!s.tools.has("request_handoff"),
 );
 check("type=in-session → continue tool registered", s.tools.has("continue"));
 check(
-	"all four surfaces register in the documented order",
+	"all three surfaces register in the documented order",
 	JSON.stringify(s.registrations) ===
-		JSON.stringify([
-			"command:handoff",
-			"tool:request_handoff",
-			"command:continue",
-			"tool:continue",
-		]),
+		JSON.stringify(["command:handoff", "command:continue", "tool:continue"]),
 	String(s.registrations),
 );
 check(
@@ -299,6 +294,10 @@ check(
 	shape(d) === shape(s),
 	`${shape(d)} vs ${shape(s)}`,
 );
+check(
+	"type=detached → request_handoff tool absent",
+	!d.tools.has("request_handoff"),
+);
 
 const agentTypeAbsent = scratchDir("pih-untyped-", {
 	handoff: { provider: "zai", model: "glm-5.3", effort: "high" },
@@ -311,6 +310,7 @@ check(
 	shape(a) === shape(s),
 	`${shape(a)} vs ${shape(s)}`,
 );
+check("type absent → request_handoff tool absent", !a.tools.has("request_handoff"));
 
 const agentNoSettings = scratchDir("pih-nosettings-");
 process.env.PI_CODING_AGENT_DIR = agentNoSettings;
@@ -322,11 +322,11 @@ check(
 	`${shape(n)} vs ${shape(s)}`,
 );
 check(
-	"no settings.json → all four surfaces present",
+	"no settings.json → all three surfaces present, request_handoff absent",
 	n.commands.has("handoff") &&
 		n.commands.has("continue") &&
-		n.tools.has("request_handoff") &&
-		n.tools.has("continue"),
+		n.tools.has("continue") &&
+		!n.tools.has("request_handoff"),
 );
 
 // ── 3. executor: /handoff → doc in the data dir → staged /continue ──

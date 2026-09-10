@@ -6,7 +6,6 @@ Context handoff for the [pi coding agent](https://github.com/earendil-works/pi) 
 
 | Feature | Description |
 | ------- | ----------- |
-| `request_handoff` tool | Agent-callable tool that pre-fills the `/handoff` command with a goal string. Fire-and-forget — sets the TUI editor text and stops. Registered in every session. |
 | `/handoff` command | Cold-session path, registered in every session. Interactive slash command that snapshots the session, generates the handoff document in a one-off LLM call on `handoff.provider`/`model`/`effort`, saves it to the handoff data dir, and stages `/continue <docPath>` in the editor to launch the new session. |
 | `/handoff!` quick mode | Quick mode for `/handoff` — skips the editor review step and stages `/continue <docPath>` from the generated document right away. |
 | Streaming progress loader | One continuous loader spans the whole flow with live phase lines: `Gathering context…` → `Memory pre-flight: agent persisting session learnings… (Xs)` (elapsed ticks per second) → `Snapshotting context (N messages, X chars)…` → generation. Escape still cancels. |
@@ -14,7 +13,7 @@ Context handoff for the [pi coding agent](https://github.com/earendil-works/pi) 
 | Diary reminder | Before the handoff prompt is generated, nudges the agent (one injected suggestion) to persist durable session learnings to MemPalace via `mempalace_diary_write`. The agent skips on its own if it already wrote a diary entry this session or nothing is worth recording. Requires the `mempalace_diary_write` tool to be active; disable with `handoff.diaryReminder: false`. |
 | Terminal multiplexer support | Auto-submits the handoff via **tmux** or **herdr** based on config — no manual Enter needed. |
 | Herdr shared memory | When using herdr, stores pane/workspace/tab context to `$AGENT_DIR/.herdr-handoff-context.json` so other extensions can locate this session. |
-| Lifecycle events | Emits `handoff_tool_start/end`, `handoff_command_start/complete` events on the event bus for other extensions to react to. |
+| Lifecycle events | Emits `handoff_command_start/complete` events on the event bus for other extensions to react to. |
 | Failure fallback | If the handoff document cannot be saved, prints the handoff prompt to terminal stderr and copies to clipboard so the user can paste manually. |
 | Anchor repo support | When the workspace isn't a git repo itself but contains sub-directory git repos, gathers git state from each sub-repo individually. |
 | Handoff document artifact | Saves the handoff document to the handoff data dir (`$AGENT_DIR/data/pi-handoff/handoff-<timestamp>.md`), not the workspace — the same place `/continue` looks for it. |
@@ -27,11 +26,10 @@ Context handoff for the [pi coding agent](https://github.com/earendil-works/pi) 
 ## Architecture
 
 ```text
-index.ts                          Entry point — unified registration of all four surfaces
+index.ts                          Entry point — unified registration of all three surfaces
 ├── skills/
 │   └── pi-handoff/               Shipped skill — primary agent instructions
 ├── tools/
-│   ├── request-handoff.ts        request_handoff tool — pre-fills /handoff (every session)
 │   └── continue.ts               continue tool — stages /continue <docPath> (skill flow)
 ├── commands/
 │   ├── handoff.ts                /handoff command — cold-session generation path
@@ -98,7 +96,7 @@ Add to your pi profile's `package.json`:
 
 Both entry points are always available, and both end in the same tail: `/continue <docPath>` staged in the editor, which launches the new session.
 
-- **Cold session — `/handoff`** (or the `request_handoff` tool, which pre-fills it): snapshots the conversation and generates the document in a **one-off LLM call** on `handoff.provider`/`model`/`effort`, saves it to the handoff data dir, and stages `/continue <docPath>`.
+- **Cold session — `/handoff`**: snapshots the conversation and generates the document in a **one-off LLM call** on `handoff.provider`/`model`/`effort`, saves it to the handoff data dir, and stages `/continue <docPath>`.
 - **Warm/active session — just ask for a handoff in natural language**: the agent follows the shipped `pi-handoff` skill — it picks the document path, writes the document itself, and calls the `continue` tool, which stages `/continue <docPath>`.
 
 Press Enter (or let herdr/tmux auto-submit) and the `/continue` command launches the new session.
@@ -151,7 +149,7 @@ All `handoff` settings are read once at extension startup — changing any of th
 
 ### Terminal modes
 
-- **`"tmux"`** (default): Uses `tmux send-keys` to auto-confirm the editor review overlay and auto-submit the `/handoff` command after `request_handoff`.
+- **`"tmux"`** (default): Uses `tmux send-keys` to auto-confirm the editor review overlay and auto-submit the staged command after the handoff document is generated.
 - **`"herdr"`**: Uses `herdr pane send-keys` for the same auto-submit flow. Additionally stores the Herdr pane context (workspace, tab, pane ids) to `$AGENT_DIR/.herdr-handoff-context.json` so other extensions can locate this session's Herdr pane.
 
 ### The unified flow (two entry points, one tail)
@@ -171,7 +169,7 @@ The `/handoff` executor never creates or replaces the session itself — it stag
 
 Notes:
 
-- `handoff.type` is deprecated: parsed for backward compatibility, ignored. All four surfaces (`/handoff`, `request_handoff`, `/continue`, `continue`) register in every session.
+- `handoff.type` is deprecated: parsed for backward compatibility, ignored. All three surfaces (`/handoff`, `/continue`, `continue`) register in every session.
 - `/continue` is general-purpose: an existing file path seeds it as read-first handoff context; ANY OTHER TEXT is sent to a new session as-is (no handoff machinery); no argument uses the newest `handoff-*.md` (manual recovery when auto-submit missed).
 - The handoff document is NOT pre-loaded into the new session (docs can be large) — the new session's single visible first message carries the document path plus a read-first instruction, the document's `## Next Task`, and the canonical `## Phase Adherence` owned by the extension (model-authored variants never leak into the new session's first message).
 
@@ -181,14 +179,12 @@ The extension emits events on the pi event bus. Other extensions can listen:
 
 | Channel | When | Payload |
 | ------- | ---- | ------- |
-| `handoff_tool_start` | `request_handoff` tool called | `{ goal, command, timestamp }` |
-| `handoff_tool_end` | `request_handoff` tool finished | `{ goal, command, timestamp }` |
 | `handoff_command_start` | `/handoff` command began | `{ goal, quickMode, timestamp }` |
 | `handoff_command_complete` | `/handoff` command finished | `{ goal, quickMode, sessionTitle?, artifactPath?, error?, timestamp }` |
 
 ## Testing
 
-`npm test` runs a behavioral smoke suite (61 checks). It stages the repo's TypeScript tree into a temp ESM context, stubs the `@earendil-works/*` runtime packages through node module hooks (repo devDep versions drift from pi's runtime aliases), loads the staged extension, and asserts: identical registration across settings shapes (`handoff.type` set or absent, no settings file), the `/handoff` executor staging `/continue` without creating a session, the continue tool's validate/repair loop, the single-message continuation prompt with canonical Phase Adherence, lifecycle event pairing, stale-ctx emit ordering, and the `/continue` modes (bare → newest doc, generic text, no docs).
+`npm test` runs a behavioral smoke suite (63 checks). It stages the repo's TypeScript tree into a temp ESM context, stubs the `@earendil-works/*` runtime packages through node module hooks (repo devDep versions drift from pi's runtime aliases), loads the staged extension, and asserts: identical registration across settings shapes (`handoff.type` set or absent, no settings file), the `/handoff` executor staging `/continue` without creating a session, the continue tool's validate/repair loop, the single-message continuation prompt with canonical Phase Adherence, lifecycle event pairing, stale-ctx emit ordering, and the `/continue` modes (bare → newest doc, generic text, no docs).
 
 ## License
 

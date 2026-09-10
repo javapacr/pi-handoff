@@ -18,8 +18,7 @@ disk on demand.
   already in the model's prompt cache, so generating the document here is the
   cheap path.
 - **Cold session, or a context that has grown very long** — do NOT write the
-  document yourself. Tell the user to run `/handoff [goal]` (or call the
-  `request_handoff` tool with their goal verbatim and stop): that path
+  document yourself. Tell the user to run `/handoff [goal]`: that path
   snapshots the session and generates the document in a one-off detached LLM
   call on the configured `handoff.provider`/`model`/`effort`. A fresh
   premium-model turn over a cold prefix is expensive there; the detached call
