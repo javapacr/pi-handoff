@@ -1,9 +1,10 @@
 /**
  * Session creation application service.
  *
- * Creates the new session for the unified continuation flow — called ONLY by
+ * Creates the new session for the unified continuation flow — called by
  * commands/continue.ts (`/continue`: the bare handoff recovery and the
- * generic text form). The live first message IS the handoff document —
+ * generic text form) and application/handoff-executor.ts (the cold-path
+ * direct launch). The live first message IS the handoff document —
  * provenance line + full PA-stripped body + canonical Phase Adherence
  * composed by `buildContinuationPrompt` (no-doc rehaul, D11).
  *
@@ -31,7 +32,8 @@ export interface CurrentSessionRef {
 
 /**
  * Create the new handoff session with the live first message and a hidden
- * `handoff-origin` entry recording the parent session + document path.
+ * `handoff-origin` entry recording the parent session + the handoff
+ * document (in `details` — the durable audit trail).
  *
  * Returns `"ok"` on success, `"cancelled"` if the user cancelled, or
  * throws on error.

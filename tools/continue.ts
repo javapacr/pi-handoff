@@ -102,8 +102,8 @@ export function registerContinueTool(pi: ExtensionAPI): void {
 						`\`## Next Task\` section. Fix the DOCUMENT text so it contains ` +
 						`a \`## Next Task\` heading followed by the actual work for the ` +
 						`new session, then call continue again with the full corrected ` +
-						`document. The canonical \`## Phase Adherence\` section is ` +
-						`added automatically at launch — do not write it yourself.`,
+						`document. Write the document WITHOUT a \`## Phase Adherence\` ` +
+						`section — the extension appends the canonical copy at launch.`,
 					rawDocument,
 				);
 			}

@@ -2,43 +2,38 @@
  * Handoff execution application service.
  *
  * Orchestrates the detached `/handoff` flow: context gathering → memory
- * pre-flight → one-off LLM generation → editor review → document save to the
- * handoff data dir. The executor NO LONGER replaces the session itself — it
- * stages `/continue <docPath>` in the editor, and the `/continue` command
- * (commands/continue.ts) owns new-session creation.
+ * pre-flight → one-off LLM generation → in-memory validation → DIRECT launch
+ * of the new session (no-doc rehaul, D12). No document file, no editor
+ * review, no editor staging — the executor itself calls createHandoffSession
+ * (command context: it holds newSession) with the same live-message shape
+ * the `/continue` path composes: provenance line + PA-stripped document +
+ * canonical Phase Adherence.
  *
- * Supports both tmux and herdr backends for auto-submit via the terminal
- * strategy, and emits lifecycle events on the event bus.
+ * Every post-generation failure mode (invalid `## Next Task`, session
+ * creation throwing, session creation cancelled) routes through the
+ * clipboard + stderr rescue — a flash-model generation is never silently
+ * destroyed. Lifecycle events are emitted on the event bus.
  */
 
-import { promises as fs } from "node:fs";
-import * as path from "node:path";
 import { execSync } from "node:child_process";
 import type {
 	ExtensionAPI,
 	ExtensionCommandContext,
 } from "@earendil-works/pi-coding-agent";
-import type {
-	HandoffPromptResult,
-	HandoffSettings,
-	TuiFilledHandoffPayload,
-	TuiHandoffCompletedPayload,
-} from "../domain/types";
+import type { HandoffPromptResult, HandoffSettings } from "../domain/types";
 import {
+	buildContinuationPrompt,
 	deriveSessionTitle,
 	findNextTaskContent,
+	stripTrailingPhaseAdherence,
 } from "../domain/handoff-prompt";
-import { stampIfAbsent } from "../domain/provenance";
+import { buildProvenanceLine } from "../domain/provenance";
 import type { GatheredContext } from "./context-gatherer";
 import { generateHandoffPrompt } from "./prompt-generator";
 import { gatherHandoffContext } from "./context-gatherer";
 import { maybeRunDiaryReminder } from "./diary-reminder";
-import { newHandoffDocPath } from "../infrastructure/config-repository";
-import {
-	captureTerminalContext,
-	type TerminalContext,
-} from "../infrastructure/terminal-strategy";
 import { hasHandoffableConversation } from "../infrastructure/session-adapter";
+import { createHandoffSession } from "./session-creator";
 import {
 	emitCommandStart,
 	emitCommandComplete,
@@ -74,58 +69,35 @@ function copyToClipboard(text: string): boolean {
 }
 
 /**
- * Print the handoff prompt to the terminal as a fallback when the handoff
- * document could not be saved to disk. Also copies to clipboard so the user
- * can paste it into a new session manually.
+ * Rescue a generated handoff that could not be launched: copy the text to
+ * the system clipboard (best-effort macOS pbcopy) and print it to stderr so
+ * the user can paste it into a new session manually. Nothing was written to
+ * disk (no-doc rehaul, D12) — there is no file path to name; the generated
+ * handoff text itself is the rescue artifact.
  */
 function printHandoffFallback(
 	ctx: ExtensionCommandContext,
 	prompt: string,
-	artifactPath: string,
-	error?: string,
+	reason: string,
 ): void {
-	const reason = error ? `: ${error}` : "";
-	ctx.ui.notify(
-		`Handoff document could not be saved${reason}. ` +
-			`Prompt saved to ${artifactPath} and copied to clipboard.`,
-		"warning",
-	);
-
+	// Rescue FIRST, notify LAST: if this runs on a stale ctx (post-replacement
+	// throw in runtimes where newSession rejects normally), a throwing notify
+	// must not eat the clipboard/stderr copy — the text exists nowhere else.
 	copyToClipboard(prompt);
 
 	process.stderr.write(
 		`\n${"=".repeat(60)}\n` +
-			`HANDOFF PROMPT (copy below into a new session)\n` +
+			`HANDOFF TEXT (copy below into a new session)\n` +
 			`${"=".repeat(60)}\n` +
 			`${prompt}\n` +
 			`${"=".repeat(60)}\n\n`,
 	);
-}
 
-/**
- * Save the final handoff document to the handoff data dir
- * ($AGENT_DIR/data/pi-handoff/handoff-<ISO ts>.md), stamped with the
- * provenance header (D3/D8) — a fresh file, so the stamp is part of the
- * first write and cannot race or truncate. `sessionFile` is the current
- * session's JSONL path (omitted from the header when unavailable).
- * Returns the file path, or "" on failure.
- */
-async function saveHandoffArtifact(
-	finalPrompt: string,
-	sessionFile: string | undefined,
-): Promise<string> {
-	const handoffDocPath = newHandoffDocPath();
-	try {
-		await fs.mkdir(path.dirname(handoffDocPath), { recursive: true });
-		await fs.writeFile(
-			handoffDocPath,
-			stampIfAbsent(finalPrompt, sessionFile),
-			"utf-8",
-		);
-		return handoffDocPath;
-	} catch {
-		return "";
-	}
+	ctx.ui.notify(
+		`Handoff could not launch (${reason}) — the generated text was copied ` +
+			`to the clipboard and printed to stderr.`,
+		"warning",
+	);
 }
 
 // ── Main orchestrator ─────────────────────────────────────────────────────
@@ -146,16 +118,9 @@ export async function executeHandoff(
 		return;
 	}
 
-	// Parse quick mode: /handoff! goal
-	const isQuick = args.rawArgs.startsWith("!");
-	const goal = (isQuick ? args.rawArgs.slice(1).trim() : args.rawArgs) || null;
+	const goal = args.rawArgs || null;
 
-	emitCommandStart(pi, { goal, quickMode: isQuick });
-
-	// Capture terminal context before async work (pane id must be stable)
-	const terminalCtx: TerminalContext | null = await captureTerminalContext(
-		settings?.terminal,
-	);
+	emitCommandStart(pi, { goal, quickMode: false });
 
 	// Cheap gate: only proceed when the session has a handoffable conversation
 	// (≥1 user/assistant message) — no full context build here. The full gather
@@ -164,7 +129,7 @@ export async function executeHandoff(
 		ctx.ui.notify("No conversation to hand off", "error");
 		emitCommandComplete(pi, {
 			goal,
-			quickMode: isQuick,
+			quickMode: false,
 			error: "No conversation to hand off",
 		});
 		return;
@@ -284,7 +249,7 @@ export async function executeHandoff(
 		ctx.ui.notify(`Handoff failed: ${generated.error}`, "error");
 		emitCommandComplete(pi, {
 			goal,
-			quickMode: isQuick,
+			quickMode: false,
 			error: generated.error,
 		});
 		return;
@@ -301,7 +266,7 @@ export async function executeHandoff(
 				"error",
 			);
 		}
-		emitCommandComplete(pi, { goal, quickMode: isQuick, error: msg });
+		emitCommandComplete(pi, { goal, quickMode: false, error: msg });
 		return;
 	}
 
@@ -312,78 +277,45 @@ export async function executeHandoff(
 		ctx.ui.notify("Handoff failed: context was not gathered", "error");
 		emitCommandComplete(pi, {
 			goal,
-			quickMode: isQuick,
+			quickMode: false,
 			error: "Context was not gathered",
 		});
 		return;
 	}
 
-	// Editor review (skipped in quick mode)
-	let finalPrompt = generated.prompt;
-	if (!isQuick) {
-		pi.events.emit("tui_handoff_completed", {
-			goal,
-			sessionTitle: "",
-			paneId: terminalCtx?.paneId ?? null,
-		} satisfies TuiHandoffCompletedPayload);
-
-		const editedPrompt = await ctx.ui.editor(
-			"Review handoff prompt",
+	// Normalize + validate in memory (D12): strip a model-authored trailing
+	// Phase Adherence, require a non-empty `## Next Task`. Nothing is saved
+	// and no editor is shown — the document itself becomes the new session's
+	// live first message.
+	const document = stripTrailingPhaseAdherence(generated.prompt);
+	const task = findNextTaskContent(document);
+	if (task === null) {
+		// Rescue (a): the flash-model generation is never silently destroyed —
+		// raw generated text goes to clipboard + stderr.
+		printHandoffFallback(
+			ctx,
 			generated.prompt,
+			'the generated handoff has no non-empty "## Next Task" section',
 		);
-		if (editedPrompt === undefined) {
-			ctx.ui.notify("Cancelled", "info");
-			emitCommandComplete(pi, {
-				goal,
-				quickMode: isQuick,
-				error: "Cancelled",
-			});
-			return;
-		}
-		finalPrompt = editedPrompt;
+		emitCommandComplete(pi, {
+			goal,
+			quickMode: false,
+			error: 'Generated handoff has no "## Next Task" section',
+		});
+		return;
 	}
 
-	// Save artifact to the handoff data dir, stamped with the provenance
-	// header linking back to THIS session (session file captured before any
-	// staging — the executor never replaces the session itself).
-	const handoffDocPath = await saveHandoffArtifact(
-		finalPrompt,
+	const sessionTitle = deriveSessionTitle(goal, task);
+
+	// Same live-message shape as the `/continue` launch path (D11): the
+	// provenance line prepended, the PA-stripped document, the canonical
+	// Phase Adherence appended — as ONE visible first message.
+	const provenanceLine = buildProvenanceLine(
 		ctx.sessionManager.getSessionFile(),
 	);
-	if (!handoffDocPath) {
-		// Save failed: rescue the prompt via clipboard + stderr so nothing is
-		// lost — the user can paste it into a new session manually. No staging,
-		// no session creation.
-		printHandoffFallback(ctx, finalPrompt, "(unsaved)");
-		emitCommandComplete(pi, {
-			goal,
-			quickMode: isQuick,
-			artifactPath: undefined,
-			error: "Could not save handoff document",
-		});
-		return;
-	}
-
-	// Validate before staging: /continue requires a non-empty Next Task.
-	const nextTask = findNextTaskContent(finalPrompt);
-	if (nextTask === null) {
-		// The doc IS saved — but it cannot be continued until the section is
-		// fixed. No staging, no session creation.
-		ctx.ui.notify(
-			`Handoff document saved: ${handoffDocPath} — no "## Next Task" section; ` +
-				`fix it and run /continue ${handoffDocPath}, or run /handoff again`,
-			"warning",
-		);
-		emitCommandComplete(pi, {
-			goal,
-			quickMode: isQuick,
-			artifactPath: handoffDocPath,
-			error: 'Handoff document has no "## Next Task" section',
-		});
-		return;
-	}
-
-	const sessionTitle = deriveSessionTitle(goal, nextTask);
+	// Non-null: `task` (checked above) is derived from the same document this
+	// call re-validates internally.
+	const liveMessage = buildContinuationPrompt(provenanceLine, document)!;
 
 	const stats: string[] = [];
 	if (generated.modelId) stats.push(`generated with ${generated.modelId}`);
@@ -391,35 +323,47 @@ export async function executeHandoff(
 		stats.push(`in ${(generated.durationMs / 1000).toFixed(1)}s`);
 	}
 	const statLine = stats.length > 0 ? ` · ${stats.join(" ")}` : "";
-	ctx.ui.notify(`Handoff document saved: ${handoffDocPath}${statLine}`, "info");
+	ctx.ui.notify(`Handoff launching: ${sessionTitle}${statLine}`, "info");
 
-	// Emit the completion BEFORE staging the editor text: the staged `/continue`
-	// command emits its own command_start when run, and `handoff_command_complete`
-	// must precede it (lifecycle pairing). The executor never creates a session
-	// itself — the /continue command owns session creation.
-	emitCommandComplete(pi, {
-		goal,
-		quickMode: isQuick,
-		sessionTitle,
-		artifactPath: handoffDocPath,
-	});
+	// Emit the completion BEFORE creating the session — once
+	// ctx.newSession() completes, pi invalidates this extension instance and
+	// events.emit/ctx calls throw "stale ctx" (live-probed 2026-09-02).
+	// Cancel/error paths below emit after — safe, no replacement happened
+	// there.
+	emitCommandComplete(pi, { goal, quickMode: false, sessionTitle });
 
-	// Stage /continue — same editor-fill + tui_filled_handoff pattern as the
-	// continue tool. The command path has NO following agent_end (this runs as
-	// a user command, outside the model turn), so the tui_filled_handoff
-	// auto-submit alone would never fire here — emit tui_handoff_completed
-	// as well: its listener sends a delayed Enter directly, which submits the
-	// staged /continue (the same listener confirms the editor review overlay
-	// earlier in this flow).
-	const command = `/continue ${handoffDocPath}`;
-	ctx.ui.setEditorText(command);
-	pi.events.emit("tui_filled_handoff", {
-		goal: sessionTitle,
-		command,
-	} satisfies TuiFilledHandoffPayload);
-	pi.events.emit("tui_handoff_completed", {
-		goal,
-		sessionTitle,
-		paneId: terminalCtx?.paneId ?? null,
-	} satisfies TuiHandoffCompletedPayload);
+	try {
+		const result = await createHandoffSession(
+			pi,
+			ctx,
+			{
+				currentSessionFile: ctx.sessionManager.getSessionFile(),
+				leafId: ctx.sessionManager.getLeafId(),
+			},
+			{
+				goal,
+				sessionTitle,
+				liveMessage,
+				// Same durable audit-trail payload as the `/continue` launch:
+				// provenance line + stripped body in the hidden entry's details.
+				document: `${provenanceLine}\n\n${document}`,
+			},
+		);
+
+		if (result === "cancelled") {
+			// Rescue (c): no session was created — the composed launch message
+			// (provenance + document + canonical PA) goes to clipboard + stderr.
+			printHandoffFallback(ctx, liveMessage, "new session was cancelled");
+			emitCommandComplete(pi, {
+				goal,
+				quickMode: false,
+				error: "Session creation cancelled",
+			});
+		}
+	} catch (err) {
+		// Rescue (b): session creation threw — same rescue surface.
+		const message = err instanceof Error ? err.message : String(err);
+		printHandoffFallback(ctx, liveMessage, message);
+		emitCommandComplete(pi, { goal, quickMode: false, error: message });
+	}
 }

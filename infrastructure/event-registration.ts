@@ -3,13 +3,12 @@
  *
  * Registers lifecycle hooks:
  * - session_start notification when a new session was created from a handoff.
- * - tui_filled_handoff → agent_end auto-submit: when the request_handoff tool
- *   pre-fills the editor with `/handoff <goal>` and the process is inside a
+ * - tui_filled_handoff → agent_end auto-submit: when the `continue` tool
+ *   stages bare `/continue` in the editor and the process is inside a
  *   supported terminal multiplexer, automatically sends Enter to the pane
- *   after the agent turn ends.
- * - tui_handoff_completed → auto-submit: when /handoff finishes generating
- *   the prompt and shows the editor review overlay, automatically sends Enter
- *   to confirm the review.
+ *   after the agent turn ends. This is the warm path's launch beat (no-doc
+ *   rehaul, D10) and the surviving captureTerminalContext call site that
+ *   keeps the herdr context file alive.
  *
  * Supports both tmux and herdr backends via the terminal strategy.
  */
@@ -19,14 +18,10 @@ import type {
 	ExtensionAPI,
 	SessionEntry,
 } from "@earendil-works/pi-coding-agent";
-import type {
-	HandoffOriginData,
-	TuiHandoffCompletedPayload,
-} from "../domain/types";
+import type { HandoffOriginData } from "../domain/types";
 import { loadHandoffSettings } from "./config-repository";
 import {
 	captureTerminalContext,
-	resolveTerminalMode,
 	sendEnter,
 	type TerminalContext,
 } from "./terminal-strategy";
@@ -129,42 +124,5 @@ export function registerHandoffEvents(pi: ExtensionAPI): void {
 		setTimeout(() => {
 			sendEnter(ctx);
 		}, AUTO_SUBMIT_DELAY_MS);
-	});
-
-	// ── tui_handoff_completed: auto-submit Enter for editor review ───────────
-	//
-	// Fires when /handoff has generated the prompt and is about to show the
-	// editor review overlay. The listener captures the terminal context and
-	// sends Enter after a delay long enough for the overlay to render.
-
-	pi.events.on("tui_handoff_completed", async (data: unknown) => {
-		const settings = loadHandoffSettings();
-		const payload = data as TuiHandoffCompletedPayload;
-
-		// Use the terminal context captured at the start of executeHandoff()
-		// (before LLM generation). If the user switched terminal tabs during
-		// generation, this is still the original pi pane.
-		let ctx: TerminalContext | null = null;
-
-		if (payload?.paneId) {
-			const mode = resolveTerminalMode(settings?.terminal);
-			if (mode) {
-				ctx = { mode, paneId: payload.paneId };
-			}
-		}
-
-		// Fall back to live capture for safety.
-		if (!ctx) {
-			ctx = await captureTerminalContext(settings?.terminal);
-		}
-
-		if (!ctx) return;
-
-		const captured = ctx;
-
-		// 500ms gives the editor overlay time to render before Enter is sent.
-		setTimeout(() => {
-			sendEnter(captured);
-		}, 500);
 	});
 }

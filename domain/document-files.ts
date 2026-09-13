@@ -42,8 +42,9 @@ const DENY_SEGMENTS = new Set(
  * extension, no denylisted path segment, and not under one of `denyDirs`.
  * `denyDirs` are absolute directory prefixes the caller resolves via the
  * config repository — `$AGENT_DIR/tmp` and `$AGENT_DIR/data/pi-handoff`
- * (handoff documents themselves are reachable via `newestHandoffDocPath`,
- * not doc-file-tracking material). All comparisons run on normalized paths.
+ * (legacy on-disk handoff documents live there; the no-doc rehaul no longer
+ * creates them, but old files stay denied — not doc-file-tracking
+ * material). All comparisons run on normalized paths.
  */
 export function isDocumentPath(
 	rawPath: string,

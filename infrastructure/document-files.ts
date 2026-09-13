@@ -29,8 +29,9 @@ import { compareDocumentFiles, isDocumentPath } from "../domain/document-files";
 import { handoffDataDir, resolvePiAgentDir } from "./config-repository";
 
 /** Absolute deny prefixes resolved from the pi agent dir: `$AGENT_DIR/tmp`
- * and the handoff data dir (`$AGENT_DIR/data/pi-handoff` — handoff documents
- * themselves are reachable via `newestHandoffDocPath`, not tracked here). */
+ * and the handoff data dir (`$AGENT_DIR/data/pi-handoff` — legacy on-disk
+ * handoff documents live there; the no-doc rehaul no longer creates them,
+ * but old files must stay out of the list). */
 export function documentDenyDirs(): string[] {
 	return [join(resolvePiAgentDir(), "tmp"), handoffDataDir()];
 }

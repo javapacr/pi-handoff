@@ -206,37 +206,16 @@ export interface HandoffPromptResult {
 
 /**
  * Payload emitted on the `tui_filled_handoff` event bus channel when a
- * handoff command is pre-filled in the editor. Emitted by the
- * `continue` tool / the `/handoff` executor (goal = the session title).
- * Payload content is informational — the auto-submit listener reads none of
- * it (it re-captures terminal context at emit time).
+ * handoff command is pre-filled in the editor. Emitted by the `continue`
+ * tool (goal = the session title). Payload content is informational — the
+ * auto-submit listener reads none of it (it re-captures terminal context at
+ * emit time).
  */
 export interface TuiFilledHandoffPayload {
 	/** The session title derived from the document's `## Next Task`. */
 	goal: string;
-	/** The full command pre-filled in the editor (e.g. `/handoff fix the bug`). */
+	/** The full command pre-filled in the editor (e.g. `/continue`). */
 	command: string;
-}
-
-/**
- * Payload emitted on the `tui_handoff_completed` event bus channel when the
- * `/handoff` command finishes creating the new session.
- */
-export interface TuiHandoffCompletedPayload {
-	/** The goal for the new session (null when inferred). */
-	goal: string | null;
-	/** The display title assigned to the new session. */
-	sessionTitle: string;
-	/**
-	 * The terminal pane id captured at the START of the handoff flow (before LLM
-	 * generation). When provided, the auto-submit listener uses this instead
-	 * of re-capturing the active pane — which may have changed if the user
-	 * switched terminal tabs during generation.
-	 *
-	 * This is a tmux pane id (e.g. "%5") or a herdr pane id (e.g. "w1:p1")
-	 * depending on the configured terminal mode.
-	 */
-	paneId?: string | null;
 }
 
 // ── Herdr shared context ───────────────────────────────────────────────────
@@ -278,14 +257,12 @@ export interface HandoffToolEventPayload {
 export interface HandoffCommandEventPayload {
 	/** The goal for the handoff (null when inferred). */
 	goal: string | null;
-	/** Whether quick mode was used (skips editor review). */
+	/** Whether the quick launch form was used (no editor review). */
 	quickMode: boolean;
 	/** Epoch ms timestamp. */
 	timestamp: number;
 	/** Only on complete: the session title assigned. */
 	sessionTitle?: string;
-	/** Only on complete: path to the saved handoff document (data dir). */
-	artifactPath?: string;
 	/** Only on complete: error message if the handoff failed. */
 	error?: string;
 }

@@ -29,7 +29,7 @@ import {
 } from "node:fs";
 import { execSync } from "node:child_process";
 import type { DocumentFile } from "../domain/types";
-import { basename, dirname, join, relative, sep } from "node:path";
+import { join, relative, sep } from "node:path";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { register } from "node:module";
@@ -64,9 +64,15 @@ const {
 const { HANDOFF_OUTPUT_TEMPLATE, HANDOFF_TEMPLATE_VERSION } = await import(
 	join(repo, "domain/handoff-template.ts")
 );
-const { PROVENANCE_HEADER_PREFIX, isProvenanceStamped } = await import(
+const { PROVENANCE_HEADER_PREFIX } = await import(
 	join(repo, "domain/provenance.ts")
 );
+// Clipboard recorder — the stub replaces node:child_process for the STAGED
+// tree only (see hooks.mjs); importing the same module URL here yields the
+// SAME instance the executor's rescue path records into.
+const { clipboardCalls } = (await import(
+	new URL("./stub-child-process.mjs", import.meta.url).href
+)) as { clipboardCalls: Array<{ input: string | undefined }> };
 const { extractDocumentFiles, documentDenyDirs } = await import(
 	join(repo, "infrastructure/document-files.ts")
 );
@@ -147,6 +153,45 @@ function snapshotDirTree(dir: string): string[] {
 	};
 	walk(dir);
 	return out.sort();
+}
+
+/** Top-level entries of the system tmpdir; harness scratch (pih-*) excluded.
+ * The first-class zero-writes invariant's third scope (design D12/D13). */
+function snapshotTmpTop(): string[] {
+	try {
+		return readdirSync(tmpdir())
+			.filter((e) => !e.startsWith("pih-"))
+			.sort();
+	} catch {
+		return [];
+	}
+}
+
+/** The three zero-writes scopes: agent dir + session cwd ("repo") + tmpdir. */
+function zeroWritesSnapshot(
+	agentDir: string,
+	cwd: string,
+): Record<string, string[]> {
+	return {
+		agentDir: snapshotDirTree(agentDir),
+		cwd: snapshotDirTree(cwd),
+		tmpTop: snapshotTmpTop(),
+	};
+}
+
+/** Human-readable added/removed entries between two snapshots. */
+function snapshotDiff(
+	a: Record<string, string[]>,
+	b: Record<string, string[]>,
+): string {
+	const out: string[] = [];
+	for (const key of Object.keys(a)) {
+		const setA = new Set(a[key]);
+		const setB = new Set(b[key]);
+		for (const p of b[key]) if (!setA.has(p)) out.push(`+ ${key}: ${p}`);
+		for (const p of a[key]) if (!setB.has(p)) out.push(`- ${key}: ${p}`);
+	}
+	return out.join(", ");
 }
 
 // Deterministic terminal strategy: no multiplexer in the harness.
@@ -232,8 +277,11 @@ function makeMockCtx(over: any = {}) {
 	return mock;
 }
 
-/** Captures what a mocked `ctx.newSession` is asked to seed. */
-function makeSessionCapture() {
+/** Captures what a mocked `ctx.newSession` is asked to seed. When
+ * `cancelSession`, newSession returns `{cancelled: true}` WITHOUT running
+ * setup/withSession and WITHOUT invalidating the extension ctx (no
+ * replacement happened — post-cancel emits stay legal). */
+function makeSessionCapture(cancelSession = false) {
 	const state = {
 		order: [] as string[],
 		sessionInfo: [] as string[],
@@ -245,6 +293,7 @@ function makeSessionCapture() {
 		state,
 		newSession: async (opts: any) => {
 			state.order.push("newSession");
+			if (cancelSession) return { cancelled: true };
 			await opts.setup?.({
 				appendSessionInfo: (t: string) => state.sessionInfo.push(t),
 				appendMessage: (m: any) => state.appended.push(m),
@@ -399,10 +448,27 @@ check(
 	String(s.registrations),
 );
 check(
-	"event hooks + bus listeners registered",
-	s.apiOn.length === 2 && s.eventsOn.length === 2,
-	JSON.stringify({ apiOn: s.apiOn.length, eventsOn: s.eventsOn.length }),
+	"api hooks: session_start + agent_end",
+	JSON.stringify(s.apiOn.map(([e]) => e).sort()) ===
+		JSON.stringify(["agent_end", "session_start"]),
+	JSON.stringify(s.apiOn.map(([e]) => e)),
 );
+check(
+	"bus listeners: tui_filled_handoff ONLY (dead tui_handoff_completed listener deleted)",
+	JSON.stringify(s.eventsOn.map(([c]) => c)) ===
+		JSON.stringify(["tui_filled_handoff"]),
+	JSON.stringify(s.eventsOn.map(([c]) => c)),
+);
+{
+	const { HANDOFF_CHANNELS } = await import(
+		join(repo, "infrastructure/event-channels.ts")
+	);
+	check(
+		"tui_handoff_completed channel deleted from the bus map",
+		!Object.values(HANDOFF_CHANNELS).includes("tui_handoff_completed"),
+		JSON.stringify(HANDOFF_CHANNELS),
+	);
+}
 
 const agentDetachedTyped = scratchDir("pih-detached-", {
 	handoff: { type: "detached", provider: "zai", model: "glm-5.3" },
@@ -465,9 +531,18 @@ interface ExecutorRun {
 	order: string[];
 	confirmCalls: number;
 	compactCalls: number;
-	newSessionCalls: number;
 	editorCalls: number;
+	newSessionCalls: number;
 	registry: RegistryCapture;
+	/** Seeded session payload + stale flag from the mocked newSession. */
+	session: ReturnType<typeof makeSessionCapture>["state"];
+	/** stderr text captured during the run (the rescue path writes there). */
+	stderr: string;
+	/** pbcopy calls recorded during the run (clipboard rescue). */
+	clipboard: Array<{ input: string | undefined }>;
+	/** agent-dir + cwd + tmpdir unchanged across the run (first-class invariant). */
+	zeroWrites: boolean;
+	zeroWritesDetail: string;
 }
 
 /** Mock `ModelRegistry` capture for the executor's generation path. */
@@ -536,6 +611,8 @@ async function runExecutor(
 		failModelIds?: string[];
 		/** Session branch override — e.g. to exercise document-file extraction. */
 		branch?: unknown[];
+		/** Behavior of the mocked ctx.newSession (default: replace + succeed). */
+		newSessionBehavior?: "ok" | "cancelled" | "throw";
 	} = {},
 ): Promise<ExecutorRun> {
 	const p = makeMockPi();
@@ -544,28 +621,54 @@ async function runExecutor(
 	const order: string[] = [];
 	let confirmCalls = 0;
 	let compactCalls = 0;
-	let newSessionCalls = 0;
 	let editorCalls = 0;
-
-	p.pi.events.emit = (ch: string, payload: any) => {
-		order.push(`emit:${ch}`);
-		p.emitted.push({ ch, payload });
-	};
+	let newSessionCalls = 0;
 
 	const capture = makeRegistryCapture(doc);
 	capture.failModelIds = opts.failModelIds ?? [];
+
+	// Session capture + stale-emit tripwire: after newSession() settles, ANY
+	// further emit on this extension instance throws (mirrors pi's
+	// invalidation) — the complete-before-replace ordering must hold.
+	const { state, newSession } = makeSessionCapture(
+		opts.newSessionBehavior === "cancelled",
+	);
+	p.pi.events.emit = (ch: string, payload: any) => {
+		if (state.stale)
+			throw new Error(
+				"This extension ctx is stale after session replacement or reload.",
+			);
+		order.push(`emit:${ch}`);
+		p.emitted.push({ ch, payload });
+	};
+	const wiredNewSession = async (o: any) => {
+		newSessionCalls++;
+		// Same timeline as the emits — ordering asserts compare indices here.
+		order.push("newSession");
+		if (opts.newSessionBehavior === "throw") {
+			throw new Error("newSession exploded (executor smoke fixture)");
+		}
+		return newSession(o);
+	};
+
+	// Zero-filesystem-writes scopes: agent dir + session cwd ("repo") + the
+	// system tmpdir top level (harness scratch is pih-* prefixed, excluded).
+	const before = zeroWritesSnapshot(agentExec, execCwd);
+
+	// Capture stderr — the rescue path prints the generated text there.
+	const stderrChunks: string[] = [];
+	const realStderrWrite = process.stderr.write.bind(process.stderr);
+	(process.stderr as any).write = (chunk: any, ..._rest: any[]) => {
+		stderrChunks.push(typeof chunk === "string" ? chunk : String(chunk));
+		return true;
+	};
+	const clipBefore = clipboardCalls.length;
 
 	const ctx = makeMockCtx({
 		cwd: execCwd,
 		modelRegistry: capture.registry,
 		sessionBranch: opts.branch,
-		compact: async () => {
-			compactCalls++;
-		},
-		newSession: async () => {
-			newSessionCalls++;
-			return { cancelled: false };
-		},
+		newSession: wiredNewSession,
 		ui: {
 			notify: (message: string, level?: string) => notes.push({ message, level }),
 			setEditorText: (t: string) => {
@@ -592,12 +695,18 @@ async function runExecutor(
 		},
 	});
 
-	await executeHandoff(
-		p.pi,
-		ctx,
-		{ rawArgs: "" },
-		{ diaryReminder: false, terminal: "tmux", ...opts.settings },
-	);
+	try {
+		await executeHandoff(
+			p.pi,
+			ctx,
+			{ rawArgs: "" },
+			{ diaryReminder: false, terminal: "tmux", ...opts.settings },
+		);
+	} finally {
+		(process.stderr as any).write = realStderrWrite;
+	}
+
+	const after = zeroWritesSnapshot(agentExec, execCwd);
 
 	return {
 		pi: p,
@@ -606,112 +715,126 @@ async function runExecutor(
 		order,
 		confirmCalls,
 		compactCalls,
-		newSessionCalls,
 		editorCalls,
+		newSessionCalls,
 		registry: capture,
+		session: state,
+		stderr: stderrChunks.join(""),
+		clipboard: clipboardCalls.slice(clipBefore),
+		zeroWrites: JSON.stringify(before) === JSON.stringify(after),
+		zeroWritesDetail: snapshotDiff(before, after),
 	};
 }
 
-console.log("executor (valid doc):");
+console.log("executor (valid doc): direct launch, zero filesystem writes:");
 const run = await runExecutor(VALID_DOC);
 const complete = run.pi.emitted.find(
 	(e) => e.ch === "handoff_command_complete",
 );
-const artifactPath: string = complete?.payload.artifactPath;
 check("completion emitted", complete !== undefined);
 check(
-	"doc saved under the handoff data dir (not tmpdir root)",
-	typeof artifactPath === "string" &&
-		dirname(artifactPath) === join(agentExec, "data", "pi-handoff") &&
-		dirname(artifactPath) !== tmpdir() &&
-		artifactPath.endsWith(".md") &&
-		basename(artifactPath).startsWith("handoff-"),
-	String(artifactPath),
-);
-// Slice B: the detached save IS stamped — content === header line + "\n" + doc.
-// The expected stamp is derived exactly as the executor writes it (same template
-// literal, same mock session file); the saved timestamp is read back from the
-// file and validated, never hardcoded.
-const savedContent = existsSync(artifactPath)
-	? readFileSync(artifactPath, "utf8")
-	: null;
-const savedHeader = savedContent?.split("\n", 1)[0];
-const savedAt = savedHeader?.match(/ saved: (\S+) -->$/)?.[1];
-check(
-	"saved doc carries the provenance header as byte line 1",
-	savedHeader !== undefined && savedHeader.startsWith(PROVENANCE_HEADER_PREFIX),
-	JSON.stringify(savedContent?.slice(0, 120)),
-);
-check(
-	"header stamps the mock session file + a parseable ISO-8601 saved time",
-	savedHeader ===
-		`<!-- pi-handoff v${HANDOFF_TEMPLATE_VERSION} | session: /tmp/fake-session.jsonl | saved: ${savedAt} -->` &&
-		savedAt !== undefined &&
-		!Number.isNaN(Date.parse(savedAt)),
-	JSON.stringify(savedHeader),
-);
-check(
-	"rest after the header line byte-equals the generated doc (stamp + newline + doc)",
-	savedHeader !== undefined &&
-		savedContent !== null &&
-		savedContent.slice(savedHeader.length + 1) === VALID_DOC &&
-		isProvenanceStamped(savedContent),
-);
-check("no ui.confirm call (compaction gate removed)", run.confirmCalls === 0);
-check("no ctx.compact call", run.compactCalls === 0);
-check("editor review still runs (detached prompt path)", run.editorCalls === 1);
-check(
-	"completion is success-tagged with title + artifact path",
+	"completion is success-tagged with the task-derived title, NO artifactPath field",
 	!!complete &&
 		complete.payload.error === undefined &&
 		complete.payload.sessionTitle === VALID_TITLE &&
-		complete.payload.artifactPath === artifactPath,
+		!("artifactPath" in complete.payload),
 	JSON.stringify(complete?.payload),
 );
 check(
-	"success notify names the saved doc",
-	run.notes.some((x) => x.level === "info" && x.message.includes(artifactPath)),
+	"doc NOT saved — agent dir + cwd + tmpdir unchanged across the flow",
+	run.zeroWrites,
+	run.zeroWritesDetail,
+);
+check("no ui.confirm call (compaction gate removed)", run.confirmCalls === 0);
+check("no ctx.compact call", run.compactCalls === 0);
+check("NO editor review", run.editorCalls === 0);
+check("NO editor staging", run.editorTexts.length === 0);
+check(
+	"NO tui_filled_handoff / NO tui_handoff_completed emissions (direct launch)",
+	!run.pi.emitted.some(
+		(e) => e.ch === "tui_filled_handoff" || e.ch === "tui_handoff_completed",
+	),
+	JSON.stringify(run.pi.emitted.map((e) => e.ch)),
+);
+check(
+	"executor creates the session DIRECTLY (exactly one newSession call)",
+	run.newSessionCalls === 1,
+	String(run.newSessionCalls),
+);
+check(
+	"new session seeded with exactly ONE live message",
+	run.session.liveMessages.length === 1,
+	JSON.stringify(run.session.liveMessages),
+);
+{
+	const live = run.session.liveMessages[0] ?? "";
+	const firstLine = live.split("\n", 1)[0];
+	const savedAt = firstLine.match(/ saved: (\S+) -->$/)?.[1];
+	check(
+		"live message first line is the machine-stamped provenance comment",
+		firstLine ===
+			`<!-- pi-handoff v${HANDOFF_TEMPLATE_VERSION} | session: /tmp/fake-session.jsonl | saved: ${savedAt} -->` &&
+			savedAt !== undefined &&
+			!Number.isNaN(Date.parse(savedAt)),
+		JSON.stringify(live.slice(0, 120)),
+	);
+	check(
+		"live message = provenance + PA-stripped document + canonical PA (W1 shape)",
+		live === continuationPrompt(firstLine, STRIPPED_DOC),
+		JSON.stringify(live),
+	);
+	check(
+		"model-authored PA variant does not ride along; canonical PA is last",
+		!live.includes("model-authored variant") && live.endsWith(CANONICAL_PA),
+	);
+	check(
+		"origin entry carries details.document = provenance + stripped doc",
+		run.session.appended.length === 1 &&
+			run.session.appended[0].role === "custom" &&
+			run.session.appended[0].customType === "handoff-origin" &&
+			run.session.appended[0].details?.document ===
+				`${firstLine}\n\n${STRIPPED_DOC}`,
+		JSON.stringify(run.session.appended[0]?.details?.document?.slice(0, 120)),
+	);
+	check(
+		"origin entry: goal/parent/profile preserved, no docPath",
+		run.session.appended[0].details?.goal === null &&
+			run.session.appended[0].details?.parentSession ===
+				"/tmp/fake-session.jsonl" &&
+			run.session.appended[0].details?.profile === agentExec &&
+			!("docPath" in (run.session.appended[0].details ?? {})),
+		JSON.stringify(run.session.appended[0].details),
+	);
+	check(
+		"session title derives from the Next Task (goal was null)",
+		run.session.sessionInfo[0] === VALID_TITLE,
+		String(run.session.sessionInfo[0]),
+	);
+}
+check(
+	"success notify names the title + generating model (no file path)",
+	run.notes.some(
+		(x) =>
+			x.level === "info" &&
+			x.message.includes(VALID_TITLE) &&
+			x.message.includes("generated with stub-model"),
+	),
 	JSON.stringify(run.notes),
 );
 check(
-	"editor staged with /continue <docPath>",
-	run.editorTexts.length === 1 &&
-		run.editorTexts[0] === `/continue ${artifactPath}`,
-	JSON.stringify(run.editorTexts),
-);
-const filled = run.pi.emitted.find((e) => e.ch === "tui_filled_handoff");
-check(
-	"tui_filled_handoff emitted with { goal: sessionTitle, command }",
-	filled !== undefined &&
-		filled.payload.command === `/continue ${artifactPath}` &&
-		filled.payload.goal === VALID_TITLE &&
-		filled.payload.goal === complete?.payload.sessionTitle,
-	JSON.stringify(filled?.payload),
-);
-const stagedCompleted = run.pi.emitted
-	.filter((e) => e.ch === "tui_handoff_completed")
-	.pop();
-check(
-	"staging emits tui_handoff_completed (delayed-Enter auto-submit; command path has no agent_end)",
-	stagedCompleted !== undefined &&
-		stagedCompleted.payload.sessionTitle === VALID_TITLE,
-	JSON.stringify(stagedCompleted?.payload),
-);
-check(
-	"staging emits tui_handoff_completed AFTER the editor fill",
-	run.order.indexOf("setEditorText") !== -1 &&
-		run.order.lastIndexOf("emit:tui_handoff_completed") >
-			run.order.indexOf("setEditorText"),
-	JSON.stringify(run.order),
-);
-check(
-	"completion precedes the editor fill",
+	"completion emitted BEFORE newSession (stale-ctx tripwire held)",
 	run.order.indexOf("emit:handoff_command_complete") !== -1 &&
 		run.order.indexOf("emit:handoff_command_complete") <
-			run.order.indexOf("setEditorText"),
+			run.order.indexOf("newSession"),
 	JSON.stringify(run.order),
 );
-check("executor never creates a session", run.newSessionCalls === 0);
+check(
+	"lifecycle pairing: exactly one start + one success complete",
+	run.pi.emitted.filter((e) => e.ch === "handoff_command_start").length === 1 &&
+		run.pi.emitted.filter((e) => e.ch === "handoff_command_complete").length ===
+			1,
+	JSON.stringify(run.pi.emitted.map((e) => e.ch)),
+);
 
 console.log("executor generation routing (registry-owned):");
 {
@@ -756,46 +879,154 @@ console.log("executor generation routing (registry-owned):");
 	);
 }
 
-console.log("executor (missing ## Next Task):");
+console.log("executor (missing ## Next Task): clipboard + stderr rescue (a):");
 const runBad = await runExecutor(INVALID_DOC);
 const completeBad = runBad.pi.emitted.find(
 	(e) => e.ch === "handoff_command_complete",
 );
-const artifactBad: string = completeBad?.payload.artifactPath;
 check(
-	"invalid doc still saved under the handoff data dir",
-	typeof artifactBad === "string" &&
-		dirname(artifactBad) === join(agentExec, "data", "pi-handoff") &&
-		existsSync(artifactBad),
-	String(artifactBad),
-);
-check(
-	"warning notify names the saved doc + the missing section",
+	"rescue notify: warning naming the defect + clipboard/stderr",
 	runBad.notes.some(
 		(x) =>
 			x.level === "warning" &&
-			x.message.includes(artifactBad) &&
-			x.message.includes("## Next Task"),
+			x.message.includes("## Next Task") &&
+			x.message.includes("clipboard"),
 	),
 	JSON.stringify(runBad.notes),
 );
 check(
-	"invalid doc → no editor staging",
-	runBad.editorTexts.length === 0,
-	JSON.stringify(runBad.editorTexts),
+	"raw generated text copied to the clipboard exactly once",
+	runBad.clipboard.length === 1 && runBad.clipboard[0].input === INVALID_DOC,
+	JSON.stringify(runBad.clipboard.map((c) => c.input?.slice(0, 40))),
 );
 check(
-	"invalid doc → no tui_filled_handoff",
-	!runBad.pi.emitted.some((e) => e.ch === "tui_filled_handoff"),
+	"generated text printed to stderr with the rescue header",
+	runBad.stderr.includes("HANDOFF TEXT") && runBad.stderr.includes(INVALID_DOC),
+	JSON.stringify(runBad.stderr.slice(0, 120)),
 );
 check(
-	"invalid doc → error-tagged completion with artifact path",
+	"invalid doc → NO session creation, NO staging, NO editor",
+	runBad.newSessionCalls === 0 &&
+		runBad.editorTexts.length === 0 &&
+		runBad.editorCalls === 0,
+);
+check(
+	"invalid doc → error-tagged completion WITHOUT artifactPath",
 	!!completeBad &&
-		!!completeBad.payload.error &&
-		completeBad.payload.artifactPath === artifactBad,
+		completeBad.payload.error?.includes("## Next Task") === true &&
+		!("artifactPath" in completeBad.payload),
 	JSON.stringify(completeBad?.payload),
 );
-check("invalid doc → no session created", runBad.newSessionCalls === 0);
+check(
+	"invalid doc → ZERO filesystem writes (old flow saved the doc; this one must not)",
+	runBad.zeroWrites,
+	runBad.zeroWritesDetail,
+);
+check(
+	"invalid doc → pairing: one start, one error complete",
+	runBad.pi.emitted.filter((e) => e.ch === "handoff_command_start").length ===
+		1 &&
+		runBad.pi.emitted.filter((e) => e.ch === "handoff_command_complete")
+			.length === 1,
+	JSON.stringify(runBad.pi.emitted.map((e) => e.ch)),
+);
+
+console.log("executor rescue (b): createHandoffSession throws:");
+{
+	const runThrow = await runExecutor(VALID_DOC, {
+		newSessionBehavior: "throw",
+	});
+	check(
+		"throw → rescue notify (warning + clipboard mention)",
+		runThrow.notes.some(
+			(x) => x.level === "warning" && x.message.includes("clipboard"),
+		),
+		JSON.stringify(runThrow.notes),
+	);
+	check(
+		"throw → composed live message rescued to clipboard + stderr",
+		runThrow.clipboard.length === 1 &&
+			runThrow.clipboard[0].input?.includes(VALID_TASK) === true &&
+			runThrow.clipboard[0].input?.includes(CANONICAL_PA) === true &&
+			runThrow.clipboard[0].input?.startsWith("<!-- pi-handoff v") === true &&
+			runThrow.stderr.includes("HANDOFF TEXT"),
+		JSON.stringify({
+			clip: runThrow.clipboard[0]?.input?.slice(0, 60),
+			stderr: runThrow.stderr.slice(0, 80),
+		}),
+	);
+	check(
+		"throw → error-tagged complete carries the thrown message, no artifactPath",
+		runThrow.pi.emitted.some(
+			(e) =>
+				e.ch === "handoff_command_complete" &&
+				e.payload.error?.includes("newSession exploded") === true &&
+				!("artifactPath" in e.payload),
+		),
+		JSON.stringify(
+			runThrow.pi.emitted.filter((e) => e.ch === "handoff_command_complete"),
+		),
+	);
+	check(
+		"throw → pairing: one start + TWO completes (pre-replacement success + error)",
+		runThrow.pi.emitted.filter((e) => e.ch === "handoff_command_start").length ===
+			1 &&
+			runThrow.pi.emitted.filter((e) => e.ch === "handoff_command_complete")
+				.length === 2,
+		JSON.stringify(runThrow.pi.emitted.map((e) => e.ch)),
+	);
+	check(
+		"throw → ZERO filesystem writes",
+		runThrow.zeroWrites,
+		runThrow.zeroWritesDetail,
+	);
+}
+
+console.log("executor rescue (c): newSession returns cancelled:");
+{
+	const runCancel = await runExecutor(VALID_DOC, {
+		newSessionBehavior: "cancelled",
+	});
+	check(
+		"cancelled → no live message seeded (no replacement happened)",
+		runCancel.session.liveMessages.length === 0,
+		JSON.stringify(runCancel.session.liveMessages),
+	);
+	check(
+		"cancelled → rescue notify (warning + clipboard mention)",
+		runCancel.notes.some(
+			(x) => x.level === "warning" && x.message.includes("clipboard"),
+		),
+		JSON.stringify(runCancel.notes),
+	);
+	check(
+		"cancelled → composed live message rescued to clipboard + stderr",
+		runCancel.clipboard.length === 1 &&
+			runCancel.clipboard[0].input?.includes(VALID_TASK) === true &&
+			runCancel.clipboard[0].input?.endsWith(CANONICAL_PA) === true,
+		JSON.stringify(runCancel.clipboard.map((c) => c.input?.slice(0, 60))),
+	);
+	check(
+		"cancelled → error-tagged complete 'Session creation cancelled', no artifactPath",
+		runCancel.pi.emitted.some(
+			(e) =>
+				e.ch === "handoff_command_complete" &&
+				e.payload.error === "Session creation cancelled" &&
+				!("artifactPath" in e.payload),
+		),
+	);
+	check(
+		"cancelled → post-cancel emit does NOT hit the stale tripwire (no replacement)",
+		runCancel.pi.emitted.filter((e) => e.ch === "handoff_command_complete")
+			.length === 2,
+		JSON.stringify(runCancel.pi.emitted.map((e) => e.ch)),
+	);
+	check(
+		"cancelled → ZERO filesystem writes",
+		runCancel.zeroWrites,
+		runCancel.zeroWritesDetail,
+	);
+}
 
 console.log("executor generation cache retention + effort:");
 {
@@ -851,11 +1082,11 @@ console.log(
 		(e) => e.ch === "handoff_command_complete",
 	);
 	check(
-		"fallback still saves the doc + emits a success completion",
+		"fallback still launches the session + emits a success completion (no artifactPath)",
 		!!completeFallback &&
 			!completeFallback.payload.error &&
-			typeof completeFallback.payload.artifactPath === "string" &&
-			existsSync(completeFallback.payload.artifactPath),
+			!("artifactPath" in completeFallback.payload) &&
+			runFallback.newSessionCalls === 1,
 		JSON.stringify(completeFallback?.payload),
 	);
 	check(
@@ -970,7 +1201,7 @@ console.log("continue command — bare recovery:");
 		order.push(`emit:${ch}`);
 		p.emitted.push({ ch, payload });
 	};
-	const before = snapshotDirTree(agentRecovery);
+	const before = zeroWritesSnapshot(agentRecovery, agentRecovery);
 	const ctx = makeMockCtx({
 		sessionBranch: branch,
 		ui: { notify: () => {}, setEditorText: () => {} },
@@ -1055,8 +1286,12 @@ console.log("continue command — bare recovery:");
 		JSON.stringify(order),
 	);
 	check(
-		"command launch performs ZERO filesystem writes",
-		JSON.stringify(snapshotDirTree(agentRecovery)) === JSON.stringify(before),
+		"command launch performs ZERO filesystem writes (agent dir + cwd + tmpdir)",
+		(() => {
+			const after = zeroWritesSnapshot(agentRecovery, agentRecovery);
+			return JSON.stringify(before) === JSON.stringify(after);
+		})(),
+		snapshotDiff(before, zeroWritesSnapshot(agentRecovery, agentRecovery)),
 	);
 
 	// Repair loop WITHIN one assistant message: last matching call wins.
@@ -1318,7 +1553,7 @@ console.log("continue tool:");
 	const p = makeMockPi();
 	handoffExtension(p.pi);
 	const toolEditorTexts: string[] = [];
-	const before = snapshotDirTree(agentTool);
+	const before = zeroWritesSnapshot(agentTool, agentTool);
 	const toolCtx = makeMockCtx({
 		cwd: agentTool,
 		ui: {
@@ -1375,8 +1610,12 @@ console.log("continue tool:");
 		ok.content[0].text.includes("Stop"),
 	);
 	check(
-		"ZERO filesystem writes (agent dir unchanged)",
-		JSON.stringify(snapshotDirTree(agentTool)) === JSON.stringify(before),
+		"ZERO filesystem writes (agent dir + cwd + tmpdir scopes)",
+		(() => {
+			const after = zeroWritesSnapshot(agentTool, agentTool);
+			return JSON.stringify(before) === JSON.stringify(after);
+		})(),
+		snapshotDiff(before, zeroWritesSnapshot(agentTool, agentTool)),
 	);
 
 	// Trailing-PA variants through the tool: paraphrased body stripped,
@@ -1865,6 +2104,37 @@ console.log("skipTools pre-serialization filter (D9):");
 				out.includes("KEEP-STAGED-NARRATION")
 			);
 		})(),
+	);
+
+	// NIT (W1 review): the harness convertToLlm stub must mirror upstream's
+	// custom→user mapping (identity stub masked the Issue-2 leak class) —
+	// a custom-role message serializes as a USER message carrying its content,
+	// while `details` (e.g. the handoff-origin document) never serializes.
+	const customOut = buildConversationText(
+		skipCtx(
+			[
+				entry("x1", {
+					role: "custom",
+					customType: "handoff-origin",
+					content: "CUSTOM-CONTENT-CANARY",
+					display: false,
+					details: { document: "DETAILS-NEVER-SERIALIZED" },
+					timestamp: 1,
+				}),
+			],
+			[],
+		),
+	);
+	check(
+		"custom-role message renders as [User]: with its content (custom→user mapping)",
+		customOut.includes("[User]: CUSTOM-CONTENT-CANARY"),
+		JSON.stringify(customOut),
+	);
+	check(
+		"custom details never serialize (no document duplication into LLM requests)",
+		!customOut.includes("DETAILS-NEVER-SERIALIZED") &&
+			!customOut.includes("handoff-origin"),
+		JSON.stringify(customOut),
 	);
 
 	// Default matrix — defaults active with NO config present (default ON).

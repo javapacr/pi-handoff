@@ -3,13 +3,14 @@
  *
  * Entry point that wires together tools, commands, and event hooks.
  *
- * Unified flow (2026-09-12): every session registers the same three surfaces —
- * the detached `/handoff` command (cold path: one-off LLM call on
- * `handoff.provider/model` that writes the doc to the handoff data dir) and
- * the `/continue` command + `continue` tool (warm path: the `pi-handoff`
- * skill flow). Both entry points converge on the same tail:
- * `/handoff` stages `/continue <docPath>` in the editor, which launches the
- * new session. `handoff.type` is parsed for backward compatibility but
+ * Unified flow (2026-09-12; no-doc rehaul 2026-09-13): every session
+ * registers the same three surfaces — the `/handoff` command (cold path:
+ * one-off LLM call on `handoff.provider/model` that launches the new session
+ * DIRECTLY — no document file is written) and the `/continue` command +
+ * `continue` tool (warm path: the `pi-handoff` skill flow, document passed
+ * inline). Both entry points converge on the same tail: createHandoffSession
+ * seeds the new session with the filled document as its first message.
+ * `handoff.type` is parsed for backward compatibility but
  * ignored (see `domain/types.ts`).
  *
  * The pi-handoff skill is the primary instruction source for agents

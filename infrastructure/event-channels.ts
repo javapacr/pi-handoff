@@ -23,10 +23,8 @@ export const HANDOFF_CHANNELS = {
 	toolEnd: "handoff_tool_end",
 	commandStart: "handoff_command_start",
 	commandComplete: "handoff_command_complete",
-	/** Legacy channel: request_handoff pre-filled the editor. */
+	/** Legacy channel: the continue tool pre-filled the editor. */
 	tuiFilledHandoff: "tui_filled_handoff",
-	/** Legacy channel: /handoff generated prompt, about to show editor. */
-	tuiHandoffCompleted: "tui_handoff_completed",
 } as const;
 
 // ── Emission helpers ──────────────────────────────────────────────────────

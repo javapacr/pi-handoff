@@ -34,8 +34,9 @@ When the user asks for a handoff (or you propose one and they agree):
    directory, no path. The `## Document Files` section is self-computed (see
    below).
 2. **Call the `continue` tool** with
-   `{"document": "<the complete filled template>"}` — the full text inline as
-   one string. It validates the document and stages `/continue`. If it
+   `{"document": "<the filled template, ## Context through ## Next Task>"}` —
+   the full text inline as one string. It validates the document and stages
+   `/continue`. If it
    reports the document is invalid (missing or empty `## Next Task`), fix the
    document text and call it again with the full corrected document — the
    repair loop.
@@ -49,7 +50,11 @@ including that context.
 
 ## Document contract
 
-Use EXACTLY this output format — omit any section that has no content:
+Use EXACTLY this output format — omit any section that has no content. One
+deliberate exception: YOUR document ENDS at `## Next Task`. The `## Phase
+Adherence` section in the fence is written by the extension, not by you —
+the fence shows the complete template contract (the new session's first
+message as composed at launch), not the literal text you produce:
 
 ```markdown
 ## Context
@@ -88,7 +93,10 @@ This is a handoff from a previous session. Phase adherence as defined in the sys
 This block mirrors `HANDOFF_OUTPUT_TEMPLATE` in
 `domain/handoff-template.ts`; a smoke check enforces byte-equality between
 this fenced block and that constant — never edit one without the other. The
-detached mode's system prompt embeds the same constant.
+detached `/handoff` system prompt embeds the same constant. The fence keeps
+the Phase Adherence section precisely because it is the TEMPLATE contract —
+the canonical copy the extension appends at launch — while your own output
+omits it.
 
 ### `## Document Files` — compute the list yourself
 
@@ -114,20 +122,21 @@ Non-negotiable rules:
   actual WORK to continue — never instructions about the handoff itself, never
   "verify the handoff", never meta-commentary. If a goal was given, the Next
   Task serves that goal.
-- **`## Phase Adherence`** — write the paragraph verbatim as shown. The
-  extension appends its own canonical copy to the new session's first message
-  and strips any trailing variant from the document body; keeping the
-  document consistent still matters.
+- **`## Phase Adherence` — OMIT it.** Write the document WITHOUT a Phase
+  Adherence section: the extension appends the canonical copy at launch and
+  strips any model-authored trailing variant, so a PA you write never
+  reaches the new session.
 - **Provenance header is machine-stamped.** The extension prepends the
   `<!-- pi-handoff … -->` line to the new session's first message — do NOT
   write that header; it is never model-authored.
-- Do NOT write anything after `## Phase Adherence`.
+- End your document at `## Next Task` — write nothing after it.
 
 ## The `continue` tool
 
 - **Purpose**: stage the `/continue` command that launches the new session.
-  It is the LAST step — call it with the complete filled template as
-  `{"document": …}` (full text inline; nothing is written to disk).
+  It is the LAST step — call it with the filled template as
+  `{"document": …}` (## Context through ## Next Task, full text inline;
+  nothing is written to disk).
 - **Validate-first**: it rejects the document (isError result) if
   `## Next Task` is missing or empty. Fix the document text and re-call with
   the full corrected document.
