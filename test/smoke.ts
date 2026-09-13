@@ -1943,7 +1943,12 @@ console.log("skipTools pre-serialization filter (D9):");
 					entry("m1", {
 						role: "assistant",
 						content: [
-							{ type: "toolCall", id: "tc1", name: "weird+name(1)", arguments: { x: 1 } },
+							{
+								type: "toolCall",
+								id: "tc1",
+								name: "weird+name(1)",
+								arguments: { x: 1 },
+							},
 							{ type: "text", text: "KEEP-NARRATION" },
 						],
 					}),

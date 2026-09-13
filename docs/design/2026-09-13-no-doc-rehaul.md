@@ -1,0 +1,44 @@
+# Design delta — no-doc rehaul: direct injection of the filled template
+
+**Date:** 2026-09-13 (post-campaign) · **Revision:** r2 — adversarially reviewed (REDESIGN verdict applied; the r1 warm-path "tool creates the session" was unimplementable: `newSession` exists only on `ExtensionCommandContext`, upstream types.d.ts:246–291, and a tool awaiting its own session's replacement awaits its own turn's settlement — deadlock by construction. r2 routes warm-path launch through the `/continue` command, which holds that authority).
+**Supersedes:** the file-based contract of [2026-09-13-template-unification.md](2026-09-13-template-unification.md) — D3's saved-doc header, D8's stamping-at-save/tool, the data-dir artifact trail, editor review, bare-`/continue`-as-newest-file. Everything else from the base design (template v2 content, D1/D2/D4–D7, D9 skipTools, wave-0 registry routing) **survives unchanged**.
+
+**Owner direction (2026-09-13, live session):** no handoff document files. The filled template is injected directly. Both paths. No manual Enter beat (delivered: cold = direct launch; warm = command-handoff via the existing invisible auto-submit chain — same UX, documented deviation).
+
+## D10 — Warm path: `continue` tool takes the template inline; `/continue` command launches
+
+- Tool: `docPath: string` → **`document: string`** (the filled template, full text). Repair loop unchanged in spirit: invalid `## Next Task` → isError naming the defect, agent fixes and re-calls. The tool does NOT create a session (cannot — command-only API) and does NOT write anything.
+- On success the tool: (1) validates via `findNextTaskContent` (unchanged, in memory), (2) **normalizes**: strips a trailing `## Phase Adherence` section from the document body (PA dedup — the canonical copy is appended exactly once downstream; model-paraphrased PAs never conflict), (3) computes the provenance line (`<!-- pi-handoff v<N> | session: <path> | saved: <ISO> -->`), (4) stages **bare `/continue`** via `setEditorText` + emits `tui_filled_handoff` (same payload shape; `command: "/continue"`) so the existing auto-submit listener (agent_end → Enter, 200 ms) fires it under herdr/tmux, (5) returns success + stop instruction.
+- **The tool call itself is the document stash**: `arguments.document` is durably in the session branch/JSONL the moment the tool executes. No hidden entry, no module state, no files.
+- **Bare `/continue` redefined**: scan `ctx.sessionManager.getBranch()` for the NEWEST assistant `toolCall` named `continue` carrying `arguments.document` → that text is the handoff document. Missing → clean error ("no handoff document in this session — re-run the handoff"). This is also the manual-recovery path (type `/continue` after a missed auto-submit; survives restarts — the branch loads from JSONL).
+- New session launch happens inside the `/continue` command handler (command context — has `newSession`), via the unchanged `createHandoffSession`.
+
+## D11 — New session seeding: content, not path
+
+- `buildContinuationPrompt` rewires: live message = provenance line + blank line + **full document** (PA-stripped) + canonical `HANDOFF_PHASE_ADHERENCE`. Doc-path line and read-first instruction die — the doc IS the first message. `## Next Task` extraction unchanged (drives the session title; model-authored PA exclusion now happens in the tool's normalize step + composer).
+- `handoff-origin` hidden entry (written via `newSession.setup(sm)` — the writable manager): **`details.document` carries the full text** (the durable audit trail; `convertToLlm` never touches `details` — putting it in `content` would duplicate the doc into every LLM request, serialization, and compaction, since custom-role `content` maps to a user message unconditionally). `content` stays the existing one-liner. Keeps `parentSession`, `profile`, `goal`, `timestamp`. `docPath` dies. The session_start notify fix survives unchanged.
+- **Duplication accounting** (accepted, documented): the next handoff's serialized conversation carries the doc once as the live first message (legitimate instruction) and once inside the `continue` toolCall args — mitigated by adding `"continue"` to `DEFAULT_SKIP_TOOLS` (drops the call block + stubs the result; the args copy vanishes). Net: one copy.
+
+## D12 — Cold path `/handoff`: generate → validate → direct launch
+
+- Generation unchanged (registry routing, `cacheRetention: "none"`, model fallback — wave 0).
+- After generation: no save, **no editor review** (owner-accepted loss). Validate in memory. **All post-generation failure modes route through the stderr+clipboard rescue** (`printHandoffFallback`, reworded: "handoff text copied to clipboard + stderr" — no file path to name): (a) invalid `## Next Task`, (b) `createHandoffSession` throws, (c) `newSession` returns `"cancelled"`. A flash-model generation is never silently destroyed.
+- On success: prepend provenance line, PA-strip, **emit `handoff_command_complete` + success notify BEFORE `createHandoffSession`** (stale-ctx invariant: after replacement, `events.emit`/ctx calls throw — assert in smoke), then direct `createHandoffSession` (command context — mechanically verified). Quick-mode `!` parsing dies (nothing to skip). `artifactPath` omitted (not `null` — the payload type is `string`).
+- Event/terminal cleanup: the `tui_handoff_completed` delayed-Enter listener dies (cold path no longer stages); `TuiHandoffCompletedPayload` type dies with it. The `tui_filled_handoff` listener **survives** (warm path auto-submit) and remains the `captureTerminalContext` call site that keeps `$AGENT_DIR/.herdr-handoff-context.json` alive for cross-extension lookups. `terminal-strategy`/`sendEnter` survive (listener consumer). Verify no other installed extension listens on `handoff_command_*` channels before changing their payload shape (grep the shared extension store at implementation).
+
+## D13 — Command surface and dead-code perimeter
+
+- `/continue` final form: **bare** = newest in-session `continue(document)` toolCall → handoff launch; **any text argument** = generic fresh-session message, sent as-is (docPath args are no longer special-cased — an old habit of typing a path now just sends the path as text, acceptable).
+- Delete: `saveHandoffArtifact`, `newHandoffDocPath`, `newestHandoffDocPath`, quick-mode parsing, `TuiHandoffCompletedPayload`. **Keep**: `handoffDataDir` (caller: document-files denylist), the data-dir denylist entry (legacy docs), `tui_filled_handoff` payload + listener, terminal-strategy.
+- `DEFAULT_SKIP_TOOLS` gains `"continue"`.
+
+## Compatibility & tests
+
+- Old docs on disk: unread by anything; harmless. `## Next Task` regex, canonical PA, critical rules, template v2 section set: byte-identical.
+- **First-class invariant: zero filesystem writes** across both flows (scope: agent-dir snapshot + repo + system tmpdir before/after each flow).
+- Smoke rework, block-enumerated: (1) domain helpers survive; (2) registration — listener count changes (apiOn/eventsOn counts drop by the dead listener; assert the new counts); (3) executor — no save/no editor, direct `newSession`, rescue on invalid/throw/cancelled with reworded notify, complete-before-replace ordering, no `artifactPath`; (4) session_start notify — fixtures drop `docPath`, assert `details.document` + profile + parent tail; (5) continue tool — `document` param, repair loop, PA-strip normalize, stages bare `/continue`, emits fill event, writes nothing; (6) continue command — bare recovers newest toolCall document (incl. repair-loop last-wins + restart-simulation via fresh branch), missing-document error, generic text unchanged, docPath-as-text; (7) lifecycle pairing; (8) skipTools — `"continue"` default active; **stub fidelity fix**: the harness `convertToLlm` stub must mirror upstream custom→user mapping (identity stub masked the Issue-2 leak class).
+- The live message's first line is the provenance comment — verify `findNextTaskContent` (regex-anchored) unaffected (it is — heading-anchored), assert in smoke.
+
+## Sequencing
+
+Wave W1: warm path — tool (`document` param + normalize + staging), `/continue` bare recovery, `buildContinuationPrompt` rewire, `DEFAULT_SKIP_TOOLS` += `continue`, skill rewrite (fill template → call tool with document → stop), stub convertToLlm fix, smoke blocks 1/2/4/5/6/8. Wave W2: cold path — executor direct launch + rescue rework, event cleanup (dead listener/payload), dead-code deletion, smoke blocks 3/7 + no-writes invariant. Close-out: README flow sections, base-design supersession note, backlog, diary, push. Work-profile live probe deferred until the owner fixes the profile env.
