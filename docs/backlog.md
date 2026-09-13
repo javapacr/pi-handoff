@@ -15,6 +15,7 @@ One file per item in [backlog/](backlog/). This index is the status board — up
 | [Own compaction extension — `pi-compact/`](backlog/pi-compact-extension.md) | open — idea |
 | [pi-cache-window — idle prompt-cache countdown + cold-resume advisor](backlog/pi-cache-window.md) | planned 2026-09-11 — parked by owner |
 | [Detached payload size — does the cold path still earn its keep?](backlog/detached-payload-size.md) | parked 2026-09-13 |
+| [No-doc rehaul — filled template injected directly, no document files](design/2026-09-13-no-doc-rehaul.md) | DONE 2026-09-13 (live direction; W1 `97418d9`, W2 `d846274`) |
 | [Cost tracking for summarization — `cost.jsonl`](backlog/cost-tracking-cost-jsonl.md) | parked 2026-09-02 |
 | [In-session handoff mode — `handoff.type: "in-session"`](backlog/in-session-handoff-mode.md) | superseded 2026-09-12 |
 
