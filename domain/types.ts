@@ -147,6 +147,21 @@ export interface HandoffSettings {
 	 * before the handoff proceeds. Defaults to true when absent.
 	 */
 	diaryReminder?: boolean;
+
+	/**
+	 * Glob patterns for the handoff conversation's tool-traffic filter
+	 * (infrastructure/tool-skip.ts). `*` matches zero or more characters and
+	 * is the only metacharacter; matching is case-sensitive. Patterns apply
+	 * to both assistant tool-call names and tool-result toolNames: matched
+	 * call blocks are dropped and matched result content replaced by a
+	 * one-line stub in the SERIALIZED handoff conversation only — the live
+	 * session branch is never mutated and tool-result `details` (todo state)
+	 * is preserved. A configured list REPLACES the defaults (copy-extend
+	 * `DEFAULT_SKIP_TOOLS`); `[]` disables filtering entirely; a malformed
+	 * value (non-array, or any non-string entry) is ignored with a warning
+	 * and the defaults stay active. Absent = defaults active.
+	 */
+	skipTools?: string[];
 }
 
 export interface ContextUsage {

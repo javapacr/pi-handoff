@@ -1652,6 +1652,463 @@ console.log("document-file extraction:");
 	);
 }
 
+// ── 9. handoff.skipTools — pre-serialization stub filter (D9) ──
+console.log("skipTools pre-serialization filter (D9):");
+{
+	const { DEFAULT_SKIP_TOOLS, applySkipToolFilter } = await import(
+		join(repo, "infrastructure/tool-skip.ts")
+	);
+	const { buildConversationText, buildHandoffContext, extractTodos } =
+		await import(join(repo, "infrastructure/session-adapter.ts"));
+
+	const toolCall = (
+		id: string,
+		name: string,
+		args: Record<string, unknown> = {},
+	) => ({ type: "toolCall", id, name, arguments: args });
+	const toolResultMsg = (
+		toolCallId: string,
+		toolName: string,
+		text: string,
+		details?: unknown,
+	) => ({
+		role: "toolResult",
+		toolCallId,
+		toolName,
+		content: [{ type: "text", text }],
+		...(details === undefined ? {} : { details }),
+		isError: false,
+		timestamp: 1,
+	});
+	const entry = (id: string, message: unknown) => ({
+		id,
+		type: "message",
+		message,
+	});
+	type Note = { message: string; level?: string };
+	const skipCtx = (branch: unknown[], notes: Note[]) =>
+		makeMockCtx({
+			sessionBranch: branch,
+			ui: {
+				notify: (message: string, level?: string) => notes.push({ message, level }),
+				setEditorText: () => {},
+			},
+		});
+
+	check(
+		"DEFAULT_SKIP_TOOLS = the four documented patterns",
+		JSON.stringify([...DEFAULT_SKIP_TOOLS]) ===
+			JSON.stringify([
+				"*mempalace_diary_write",
+				"*mempalace_reconnect",
+				"jira_assign_ticket",
+				"jira_update_status",
+			]),
+		JSON.stringify([...DEFAULT_SKIP_TOOLS]),
+	);
+
+	// Default matrix — defaults active with NO config present (default ON).
+	const skipDefaultDir = scratchDir("pih-skip-default-");
+	process.env.PI_CODING_AGENT_DIR = skipDefaultDir;
+
+	const matrixBranch = [
+		entry("m0", { role: "user", content: "log the session" }),
+		entry("m1", {
+			role: "assistant",
+			content: [
+				{ type: "text", text: "Recording." },
+				toolCall("c1", "mempalace_diary_write", {
+					content: "PLAIN-DIARY-BODY",
+				}),
+				toolCall("c2", "mempalace-personal_mempalace_diary_write", {
+					content: "PREFIXED-DIARY-BODY",
+				}),
+				toolCall("c3", "read", { path: "/tmp/notes.md" }),
+			],
+		}),
+		entry(
+			"m2",
+			toolResultMsg("c1", "mempalace_diary_write", "PLAIN-DIARY-SAVED"),
+		),
+		entry(
+			"m3",
+			toolResultMsg(
+				"c2",
+				"mempalace-personal_mempalace_diary_write",
+				"PREFIXED-DIARY-SAVED",
+			),
+		),
+		entry("m4", toolResultMsg("c3", "read", "VERBATIM-READ-RESULT")),
+		entry("m5", {
+			role: "assistant",
+			content: [
+				toolCall("c4", "mempalace_reconnect"),
+				toolCall("c5", "jira_assign_ticket", { ticket: "T-1" }),
+				toolCall("c6", "jira_update_status", { ticket: "T-1" }),
+			],
+		}),
+		entry("m6", toolResultMsg("c4", "mempalace_reconnect", "RECONNECTED")),
+		entry("m7", toolResultMsg("c5", "jira_assign_ticket", "ASSIGNED")),
+		entry("m8", toolResultMsg("c6", "jira_update_status", "UPDATED")),
+		entry("m9", {
+			role: "assistant",
+			content: [
+				toolCall("c7", "mempalace-personal_mempalace_search", {
+					query: "handoff",
+				}),
+			],
+		}),
+		entry(
+			"m10",
+			toolResultMsg(
+				"c7",
+				"mempalace-personal_mempalace_search",
+				"VERBATIM-SEARCH-HITS",
+			),
+		),
+		entry("m11", {
+			role: "assistant",
+			content: [toolCall("c8", "jira_read_ticket", { ticket: "T-2" })],
+		}),
+		entry("m12", toolResultMsg("c8", "jira_read_ticket", "VERBATIM-JIRA-READ")),
+		entry("m13", {
+			role: "assistant",
+			content: [toolCall("c9", "bash", { command: "ls" })],
+		}),
+		entry("m14", toolResultMsg("c9", "bash", "VERBATIM-BASH-OUT")),
+		entry("m15", {
+			role: "assistant",
+			content: [{ type: "text", text: "Done." }],
+		}),
+	];
+
+	const matrixNotes: Note[] = [];
+	const matrixOut = buildConversationText(skipCtx(matrixBranch, matrixNotes));
+
+	check(
+		"plain mempalace_diary_write → call args gone + one-line result stub",
+		!matrixOut.includes("PLAIN-DIARY-BODY") &&
+			!matrixOut.includes("PLAIN-DIARY-SAVED") &&
+			matrixOut.includes("[skipped by handoff.skipTools: mempalace_diary_write]"),
+		JSON.stringify(matrixOut),
+	);
+	check(
+		"server-prefixed mempalace-personal_mempalace_diary_write → same stub",
+		!matrixOut.includes("PREFIXED-DIARY-BODY") &&
+			!matrixOut.includes("PREFIXED-DIARY-SAVED") &&
+			matrixOut.includes(
+				"[skipped by handoff.skipTools: mempalace-personal_mempalace_diary_write]",
+			),
+		JSON.stringify(matrixOut),
+	);
+	check(
+		"mempalace_reconnect → stubbed (call dropped + result stubbed)",
+		!matrixOut.includes("RECONNECTED") &&
+			matrixOut.includes("[skipped by handoff.skipTools: mempalace_reconnect]"),
+		JSON.stringify(matrixOut),
+	);
+	check(
+		"jira_assign_ticket + jira_update_status → stubbed",
+		!matrixOut.includes("ASSIGNED") &&
+			!matrixOut.includes("UPDATED") &&
+			matrixOut.includes("[skipped by handoff.skipTools: jira_assign_ticket]") &&
+			matrixOut.includes("[skipped by handoff.skipTools: jira_update_status]"),
+		JSON.stringify(matrixOut),
+	);
+	check(
+		"non-matching read (server-prefixed search) → result verbatim, call kept",
+		matrixOut.includes("VERBATIM-SEARCH-HITS") &&
+			matrixOut.includes(
+				"[Assistant tool calls]: mempalace-personal_mempalace_search",
+			),
+		JSON.stringify(matrixOut),
+	);
+	check(
+		"non-matching reads (jira_read_ticket, plain read/bash) → fully intact",
+		matrixOut.includes("VERBATIM-JIRA-READ") &&
+			matrixOut.includes("VERBATIM-READ-RESULT") &&
+			matrixOut.includes("VERBATIM-BASH-OUT"),
+		JSON.stringify(matrixOut),
+	);
+	check(
+		"kept toolCall block still serializes (read listed with args)",
+		matrixOut.includes('read(path="/tmp/notes.md")'),
+		JSON.stringify(matrixOut),
+	);
+	check(
+		"assistant narration survives (only toolCall blocks dropped)",
+		matrixOut.includes("Recording.") && matrixOut.includes("Done."),
+		JSON.stringify(matrixOut),
+	);
+	check(
+		"valid defaults/absent config → no notify",
+		matrixNotes.length === 0,
+		JSON.stringify(matrixNotes),
+	);
+
+	// Override replaces: a configured list REPLACES the defaults.
+	const overrideBranch = [
+		entry("o0", { role: "user", content: "go" }),
+		entry("o1", {
+			role: "assistant",
+			content: [
+				toolCall("oc1", "mempalace_diary_write", {
+					content: "OVERRIDE-DIARY",
+				}),
+			],
+		}),
+		entry(
+			"o2",
+			toolResultMsg("oc1", "mempalace_diary_write", "OVERRIDE-DIARY-SAVED"),
+		),
+		entry("o3", {
+			role: "assistant",
+			content: [toolCall("oc2", "foo_bar", { x: 1 })],
+		}),
+		entry("o4", toolResultMsg("oc2", "foo_bar", "OVERRIDE-FOOBAR-SAVED")),
+	];
+
+	process.env.PI_CODING_AGENT_DIR = scratchDir("pih-skip-override-", {
+		handoff: { skipTools: ["foo_*"] },
+	});
+	const overrideNotes: Note[] = [];
+	const overrideOut = buildConversationText(
+		skipCtx(overrideBranch, overrideNotes),
+	);
+	check(
+		"user list REPLACES defaults (mempalace NOT stubbed)",
+		overrideOut.includes("OVERRIDE-DIARY-SAVED") &&
+			!overrideOut.includes(
+				"[skipped by handoff.skipTools: mempalace_diary_write]",
+			),
+		JSON.stringify(overrideOut),
+	);
+	check(
+		"override pattern foo_* → foo_bar call dropped + result stubbed",
+		!overrideOut.includes("x=1") &&
+			!overrideOut.includes("OVERRIDE-FOOBAR-SAVED") &&
+			overrideOut.includes("[skipped by handoff.skipTools: foo_bar]"),
+		JSON.stringify(overrideOut),
+	);
+
+	process.env.PI_CODING_AGENT_DIR = scratchDir("pih-skip-empty-", {
+		handoff: { skipTools: [] },
+	});
+	const emptyNotes: Note[] = [];
+	const emptyOut = buildConversationText(skipCtx(overrideBranch, emptyNotes));
+	check(
+		"[] disables filtering entirely (nothing stubbed)",
+		emptyOut.includes("OVERRIDE-DIARY-SAVED") &&
+			emptyOut.includes("OVERRIDE-FOOBAR-SAVED") &&
+			!emptyOut.includes("[skipped by handoff.skipTools"),
+		JSON.stringify(emptyOut),
+	);
+	check("[] → no notify", emptyNotes.length === 0, JSON.stringify(emptyNotes));
+
+	// Malformed values: ignored entirely + one-line warning notify.
+	for (const mc of [
+		{ label: 'string "*diary" (not an array)', value: "*diary" as unknown },
+		{ label: '["ok", 42] (non-string entry)', value: ["ok", 42] as unknown },
+	]) {
+		process.env.PI_CODING_AGENT_DIR = scratchDir("pih-skip-bad-", {
+			handoff: { skipTools: mc.value },
+		});
+		const badNotes: Note[] = [];
+		const badOut = buildConversationText(skipCtx(overrideBranch, badNotes));
+		check(
+			`malformed ${mc.label} → ignored, defaults active`,
+			badOut.includes("[skipped by handoff.skipTools: mempalace_diary_write]") &&
+				!badOut.includes("OVERRIDE-DIARY-SAVED"),
+			JSON.stringify(badOut),
+		);
+		check(
+			`malformed ${mc.label} → exactly one warning notify naming the key`,
+			badNotes.length === 1 &&
+				badNotes[0].level === "warning" &&
+				badNotes[0].message.includes("skipTools"),
+			JSON.stringify(badNotes),
+		);
+	}
+
+	// Metachar literals in tool names are matched literally (regex-escaped,
+	// no injection, no accidental pattern semantics).
+	process.env.PI_CODING_AGENT_DIR = scratchDir("pih-skip-meta-", {
+		handoff: { skipTools: ["weird+name(1)"] },
+	});
+	{
+		const metaNotes: Note[] = [];
+		const metaOut = buildConversationText(
+			skipCtx(
+				[
+					entry("m1", {
+						role: "assistant",
+						content: [
+							{ type: "toolCall", id: "tc1", name: "weird+name(1)", arguments: { x: 1 } },
+							{ type: "text", text: "KEEP-NARRATION" },
+						],
+					}),
+					entry("m2", {
+						role: "toolResult",
+						toolCallId: "tc1",
+						toolName: "weird+name(1)",
+						content: [{ type: "text", text: "META-RESULT" }],
+					}),
+				],
+				metaNotes,
+			),
+		);
+		check(
+			"metachar literals (+, parens) matched literally — stubbed, narration kept",
+			metaOut.includes("[skipped by handoff.skipTools: weird+name(1)]") &&
+				!metaOut.includes("META-RESULT") &&
+				!metaOut.includes("weird+name(1)({") &&
+				metaOut.includes("KEEP-NARRATION"),
+			JSON.stringify(metaOut),
+		);
+	}
+
+	// Turn-order coherence: the stub line keeps the turn boundary legible.
+	process.env.PI_CODING_AGENT_DIR = skipDefaultDir;
+	const turnBranch = [
+		entry("u1", { role: "user", content: "TURN-USER-1" }),
+		entry("a1", {
+			role: "assistant",
+			content: [
+				toolCall("tc1", "mempalace_diary_write", { content: "TURN-DIARY" }),
+			],
+		}),
+		entry(
+			"t1",
+			toolResultMsg("tc1", "mempalace_diary_write", "TURN-DIARY-SAVED"),
+		),
+		entry("a2", {
+			role: "assistant",
+			content: [{ type: "text", text: "TURN-ASSISTANT-TEXT" }],
+		}),
+		entry("t2", toolResultMsg("tx", "read", "TURN-NEIGHBOR-READ")),
+		entry("u2", { role: "user", content: "TURN-USER-2" }),
+	];
+	const turnOut = buildConversationText(skipCtx(turnBranch, []));
+	const idx = (needle: string) => turnOut.indexOf(needle);
+	check(
+		"turn order: user1 < stub < assistant text < neighbor read < user2",
+		idx("[User]: TURN-USER-1") !== -1 &&
+			idx("[User]: TURN-USER-1") <
+				idx("[skipped by handoff.skipTools: mempalace_diary_write]") &&
+			idx("[skipped by handoff.skipTools: mempalace_diary_write]") <
+				idx("[Assistant]: TURN-ASSISTANT-TEXT") &&
+			idx("[Assistant]: TURN-ASSISTANT-TEXT") <
+				idx("[Tool result]: TURN-NEIGHBOR-READ") &&
+			idx("[Tool result]: TURN-NEIGHBOR-READ") < idx("[User]: TURN-USER-2"),
+		JSON.stringify(turnOut),
+	);
+	check(
+		"non-matching neighbor result keeps its content",
+		turnOut.includes("[Tool result]: TURN-NEIGHBOR-READ"),
+		JSON.stringify(turnOut),
+	);
+
+	// No-mutation: buildConversationText twice on the same live ctx/branch.
+	const mutationBranch = [
+		entry("n0", {
+			role: "user",
+			content:
+				"[handoff preflight] A session handoff is starting. Consider a diary entry.",
+		}),
+		entry("n1", {
+			role: "assistant",
+			content: [
+				toolCall("nc1", "mempalace_diary_write", {
+					content: "NO-MUTATION-DIARY",
+				}),
+			],
+		}),
+		entry(
+			"n2",
+			toolResultMsg("nc1", "mempalace_diary_write", "NO-MUTATION-SAVED"),
+		),
+	];
+	const mutCtx = skipCtx(mutationBranch, []);
+	const branchSnapshot = JSON.stringify(mutationBranch);
+	const mutOut1 = buildConversationText(mutCtx);
+	const mutOut2 = buildConversationText(mutCtx);
+	check("double run → identical output both times", mutOut1 === mutOut2);
+	check(
+		"double run → original branch objects unchanged (deep-compare vs snapshot)",
+		JSON.stringify(mutationBranch) === branchSnapshot,
+	);
+	check(
+		"defaults active during the double run (stub present)",
+		mutOut1.includes("[skipped by handoff.skipTools: mempalace_diary_write]"),
+		JSON.stringify(mutOut1),
+	);
+	check(
+		"diary-reminder nudge (user message) survives — user messages never dropped",
+		mutOut1.includes("[handoff preflight] A session handoff is starting."),
+		JSON.stringify(mutOut1),
+	);
+
+	// User pattern matching `todo`: content stubbed, details INTACT — todo
+	// extraction reads the ORIGINAL branch and must keep working.
+	process.env.PI_CODING_AGENT_DIR = scratchDir("pih-skip-todo-", {
+		handoff: { skipTools: ["todo"] },
+	});
+	const todoDetails = {
+		todos: [{ id: 1, text: "Ship it", done: false }],
+		nextId: 2,
+	};
+	const todoBranch = [
+		entry("d0", { role: "user", content: "track work" }),
+		entry("d1", { role: "assistant", content: [toolCall("dc1", "todo")] }),
+		entry("d2", toolResultMsg("dc1", "todo", "TODO-CONTENT-TEXT", todoDetails)),
+	];
+	const todoOut = buildConversationText(skipCtx(todoBranch, []));
+	check(
+		'user pattern ["todo"] → stubbed content in serialized text',
+		todoOut.includes("[skipped by handoff.skipTools: todo]") &&
+			!todoOut.includes("TODO-CONTENT-TEXT"),
+		JSON.stringify(todoOut),
+	);
+	check(
+		"extractTodos on the SAME branch still returns the list (branch never filtered)",
+		extractTodos(todoBranch as any) === "- [ ] Ship it",
+		String(extractTodos(todoBranch as any)),
+	);
+	const clonedResult: any = applySkipToolFilter(
+		todoBranch.map((e: any) => e.message),
+	).find((m: any) => m.role === "toolResult");
+	check(
+		"filtered clone is a COPY with details intact (content-only mutation)",
+		clonedResult !== todoBranch[2].message &&
+			JSON.stringify(clonedResult.details) === JSON.stringify(todoDetails) &&
+			JSON.stringify(clonedResult.content) ===
+				JSON.stringify([
+					{ type: "text", text: "[skipped by handoff.skipTools: todo]" },
+				]),
+		JSON.stringify(clonedResult),
+	);
+
+	// Wiring is real end-to-end: the gatherer payload carries the stubs.
+	process.env.PI_CODING_AGENT_DIR = skipDefaultDir;
+	const gatherCtx = skipCtx(matrixBranch, []);
+	const gathered = buildHandoffContext(gatherCtx);
+	check(
+		"gatherer payload conversationText carries the stubs (filter wired end-to-end)",
+		gathered.conversationText.includes(
+			"[skipped by handoff.skipTools: mempalace_diary_write]",
+		) && gathered.conversationText === buildConversationText(gatherCtx),
+		JSON.stringify(gathered.conversationText.slice(0, 200)),
+	);
+	check(
+		"gatherer messageCount counts the branch pre-filter; todos input untouched",
+		gathered.messageCount === matrixBranch.length && gathered.todos === null,
+		JSON.stringify({
+			messageCount: gathered.messageCount,
+			todos: gathered.todos,
+		}),
+	);
+}
+
 console.log(
 	failures === 0 ? "\nALL SMOKE CHECKS PASSED" : `\n${failures} FAILURES`,
 );

@@ -19,6 +19,7 @@ import type {
 	TaskDetails,
 	TodoDetails,
 } from "../domain/types";
+import { applySkipToolFilter } from "./tool-skip";
 
 function entryToMessage(entry: SessionEntry): AgentMessage | undefined {
 	if (entry.type === "message") return entry.message;
@@ -136,7 +137,16 @@ export function extractContextUsage(
 export function buildConversationText(ctx: ExtensionCommandContext): string {
 	const branch = ctx.sessionManager.getBranch();
 	const messages = getHandoffMessages(branch);
-	return serializeConversation(convertToLlm(messages));
+	// handoff.skipTools (D9): the filter deep-clones before mutating — the
+	// branch objects above are live session state. Settings are re-read per
+	// call inside the filter; the notify sink is best-effort.
+	return serializeConversation(
+		convertToLlm(
+			applySkipToolFilter(messages, (message, level) =>
+				ctx.ui?.notify?.(message, level),
+			),
+		),
+	);
 }
 
 /**
@@ -158,7 +168,10 @@ export function buildHandoffContext(
 	const branch = ctx.sessionManager.getBranch();
 	const messages = getHandoffMessages(branch);
 	return {
-		conversationText: serializeConversation(convertToLlm(messages)),
+		// Routed through buildConversationText so handoff.skipTools stubs the
+		// gathered payload — the filter lives in exactly one place. Todos
+		// still read the raw branch below (never filtered).
+		conversationText: buildConversationText(ctx),
 		messageCount: messages.length,
 		todos: extractTodos(branch),
 		git: null, // populated separately by the git client
