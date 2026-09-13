@@ -6,22 +6,28 @@
  *
  * - detached (`buildSystemPrompt` in application/prompt-generator.ts): the
  *   template is embedded in the system prompt of a one-off LLM call.
- * - in-session (commands/handoff-in-session.ts): the template is embedded in
- *   the instruction turn injected into the live session, which writes the doc
- *   to disk and calls the `continue` tool.
+ * - skill (skills/pi-handoff/SKILL.md): the fenced document-contract block
+ *   mirrors this constant byte-for-byte — byte-equality is enforced by
+ *   test/smoke.ts, not by a "keep in sync" note.
  *
  * Keep these constants byte-stable: the detached prompt's output shape and
- * the in-session doc shape must stay identical so `/continue` can
+ * the skill-authored doc shape must stay identical so `/continue` can
  * process either.
  */
+
+/**
+ * Version of the document contract HANDOFF_OUTPUT_TEMPLATE encodes.
+ * Bumped whenever the section set changes (v2 added `## Document Files`).
+ */
+export const HANDOFF_TEMPLATE_VERSION = 2;
 
 /**
  * Goal-conditional framing block. Identical wording in both modes.
  */
 export function handoffGoalBlock(goal: string | null): string {
-	return goal
-		? `The user has indicated the next session should focus on: "${goal}". Tailor the entire handoff doc toward this goal — emphasise relevant context, de-prioritise unrelated work, and make the next task align with this focus.`
-		: `No explicit goal was provided. Read the conversation and infer the most logical next task or continuation. Use it as the ## Next Task section.`;
+ return goal
+  ? `The user has indicated the next session should focus on: "${goal}". Tailor the entire handoff doc toward this goal — emphasise relevant context, de-prioritise unrelated work, and make the next task align with this focus.`
+  : `No explicit goal was provided. Read the conversation and infer the most logical next task or continuation. Use it as the ## Next Task section.`;
 }
 
 /**
@@ -59,6 +65,9 @@ Recent changes:
 
 Recent commits:
 - abc1234 message
+
+## Document Files
+[One \`- <path> — <in-session|git-only> — <optional one-line what-it-is>\` line per document file created or edited this session — omit the section when there are none. The annotation is optional for git-only rows.]
 
 ## Active Tasks
 - [ ] pending task

@@ -238,6 +238,7 @@ export async function executeHandoff(
 							conversationText: gathered.context.conversationText,
 							todos: gathered.context.todos,
 							git: gathered.context.git,
+							documentFiles: gathered.context.documentFiles,
 							skills: gathered.context.skills,
 							cwd: gathered.context.cwd,
 							contextUsage: gathered.context.contextUsage,

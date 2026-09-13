@@ -5,24 +5,6 @@
 import { HANDOFF_PHASE_ADHERENCE } from "./handoff-template";
 
 /**
- * Split a generated handoff prompt at the last ## Next Task header.
- * The context block is pre-seeded into the session via setup().
- * The next-task text is sent as the live user message that triggers the agent.
- */
-export function splitHandoffPrompt(prompt: string): {
-	context: string;
-	nextTask: string;
-} {
-	const marker = "\n## Next Task";
-	const idx = prompt.lastIndexOf(marker);
-	if (idx === -1) return { context: "", nextTask: prompt };
-	return {
-		context: prompt.slice(0, idx).trim(),
-		nextTask: prompt.slice(idx + marker.length).trim(),
-	};
-}
-
-/**
  * Content of the LAST `## Next Task` section — everything between its heading
  * and the next heading (or EOF), trimmed. Null when the heading is missing or
  * the section is empty. Deliberately EXCLUDES any model-authored trailing

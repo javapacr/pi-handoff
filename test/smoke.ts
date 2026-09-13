@@ -22,10 +22,13 @@ import {
 	statSync,
 	existsSync,
 	readFileSync,
+	realpathSync,
 	rmSync,
 } from "node:fs";
-import { tmpdir } from "node:os";
+import { execSync } from "node:child_process";
+import type { DocumentFile } from "../domain/types";
 import { basename, dirname, join, relative, sep } from "node:path";
+import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { register } from "node:module";
 register("./hooks.mjs", import.meta.url);
@@ -49,8 +52,18 @@ writeFileSync(join(stage, "package.json"), JSON.stringify({ type: "module" }));
 const repo = stage;
 
 const { default: handoffExtension } = await import(join(repo, "index.ts"));
+const promptModule = await import(join(repo, "domain/handoff-prompt.ts"));
 const { findNextTaskContent, buildContinuationPrompt, deriveSessionTitle } =
-	await import(join(repo, "domain/handoff-prompt.ts"));
+	promptModule;
+const { HANDOFF_OUTPUT_TEMPLATE, HANDOFF_TEMPLATE_VERSION } = await import(
+	join(repo, "domain/handoff-template.ts")
+);
+const { extractDocumentFiles, documentDenyDirs } = await import(
+	join(repo, "infrastructure/document-files.ts")
+);
+const { getGitContext } = await import(
+	join(repo, "infrastructure/git-client.ts")
+);
 const { executeHandoff } = await import(
 	join(repo, "application/handoff-executor.ts")
 );
@@ -144,7 +157,7 @@ function makeMockPi() {
 			on: (ch: string, handler: Function) => eventsOn.push([ch, handler]),
 			emit: (ch: string, payload: any) => emitted.push({ ch, payload }),
 		},
-		sendUserMessage: (content: string, opts: any) => {},
+		sendUserMessage: (_content: string, _opts: any) => {},
 		setLabel: () => {},
 		getActiveTools: () => ["mempalace_diary_write"],
 		getAllTools: () => [{ name: "mempalace_diary_write" }],
@@ -164,6 +177,9 @@ function makeMockPi() {
 type MockPi = ReturnType<typeof makeMockPi>;
 
 function makeMockCtx(over: any = {}) {
+	const branch = over.sessionBranch ?? [
+		{ id: "e1", type: "message", message: { role: "user", content: "hello" } },
+	];
 	const mock = {
 		mode: "tui",
 		cwd: tmpdir(),
@@ -185,9 +201,7 @@ function makeMockCtx(over: any = {}) {
 		getSystemPromptOptions: () => ({}),
 		getContextUsage: () => undefined,
 		sessionManager: {
-			getBranch: () => [
-				{ id: "e1", type: "message", message: { role: "user", content: "hello" } },
-			],
+			getBranch: () => branch,
 			getSessionFile: () => "/tmp/fake-session.jsonl",
 			getLeafId: () => "leaf-1",
 		},
@@ -258,6 +272,49 @@ check(
 check(
 	"title derives from Next Task first line",
 	deriveSessionTitle(null, "Do the thing.\nmore detail") === "Do the thing.",
+);
+
+// ── 1b. template v2 contract: version + test-enforced skill mirror ──
+console.log("template v2 + skill contract sync:");
+// The staged tree copies only .ts files, so the skill is read from the
+// ORIGINAL repo root — byte-equality against the rendered constant is
+// unaffected: the constant and the skill ship in the same commit.
+const skillSource = readFileSync(
+	join(repoRoot, "skills", "pi-handoff", "SKILL.md"),
+	"utf8",
+);
+const fenceMarker = "```markdown\n";
+const fenceStart = skillSource.indexOf(fenceMarker);
+const fenceEnd =
+	fenceStart === -1 ? -1 : skillSource.indexOf("\n```", fenceStart);
+const fencedContract =
+	fenceStart === -1 || fenceEnd === -1
+		? null
+		: skillSource.slice(fenceStart + fenceMarker.length, fenceEnd);
+check("template version constant is 2", HANDOFF_TEMPLATE_VERSION === 2);
+check("skill has a markdown contract fence", fencedContract !== null);
+check(
+	"fenced contract block === rendered HANDOFF_OUTPUT_TEMPLATE",
+	fencedContract === HANDOFF_OUTPUT_TEMPLATE,
+	JSON.stringify(fencedContract?.slice(0, 200)),
+);
+check(
+	"Document Files section sits between Git State and Active Tasks",
+	HANDOFF_OUTPUT_TEMPLATE.indexOf("## Document Files") >
+		HANDOFF_OUTPUT_TEMPLATE.indexOf("## Git State") &&
+		HANDOFF_OUTPUT_TEMPLATE.indexOf("## Document Files") <
+			HANDOFF_OUTPUT_TEMPLATE.indexOf("## Active Tasks"),
+);
+check(
+	"## Next Task + Phase Adherence stay last and byte-identical",
+	HANDOFF_OUTPUT_TEMPLATE.endsWith(
+		"## Next Task\n[Clear, actionable statement of the goal for this new session]\n\n" +
+			CANONICAL_PA,
+	),
+);
+check(
+	"splitHandoffPrompt removed (dead code deleted, import sites compile)",
+	!("splitHandoffPrompt" in promptModule),
 );
 
 // ── 2. unified registration (handoff.type parsed but ignored) ──
@@ -421,7 +478,12 @@ function makeRegistryCapture(doc: string): RegistryCapture {
 /** Drive executeHandoff end-to-end with a canned generated document. */
 async function runExecutor(
 	doc: string,
-	opts: { settings?: Record<string, unknown>; failModelIds?: string[] } = {},
+	opts: {
+		settings?: Record<string, unknown>;
+		failModelIds?: string[];
+		/** Session branch override — e.g. to exercise document-file extraction. */
+		branch?: unknown[];
+	} = {},
 ): Promise<ExecutorRun> {
 	const p = makeMockPi();
 	const notes: Array<{ message: string; level: string | undefined }> = [];
@@ -443,6 +505,7 @@ async function runExecutor(
 	const ctx = makeMockCtx({
 		cwd: execCwd,
 		modelRegistry: capture.registry,
+		sessionBranch: opts.branch,
 		compact: async () => {
 			compactCalls++;
 		},
@@ -726,6 +789,49 @@ console.log(
 	);
 }
 
+console.log("executor payload document-files section:");
+{
+	const emptyPayload =
+		run.registry.calls[0]?.context?.messages?.[0]?.content?.[0]?.text ?? "";
+	check(
+		"payload omits ## Document Files when the gathered list is empty",
+		emptyPayload.includes("## Conversation History") &&
+			!emptyPayload.includes("## Document Files"),
+		JSON.stringify(emptyPayload.slice(-300)),
+	);
+
+	const docBranch = [
+		{ id: "u0", type: "message", message: { role: "user", content: "start" } },
+		{
+			id: "a0",
+			type: "message",
+			message: {
+				role: "assistant",
+				content: [
+					{
+						type: "toolCall",
+						name: "write",
+						arguments: { path: join(execCwd, "notes", "plan.md") },
+					},
+				],
+			},
+		},
+	];
+	const runDocs = await runExecutor(VALID_DOC, { branch: docBranch });
+	const docsPayload =
+		runDocs.registry.calls[0]?.context?.messages?.[0]?.content?.[0]?.text ?? "";
+	check(
+		"payload includes ## Document Files when the list is non-empty",
+		docsPayload.includes("## Document Files"),
+		JSON.stringify(docsPayload.slice(-500)),
+	);
+	check(
+		"payload document rows carry path + provenance marker",
+		docsPayload.includes(`- ${join(execCwd, "notes", "plan.md")} — in-session`),
+		JSON.stringify(docsPayload.slice(-500)),
+	);
+}
+
 // ── 4. continue tail: the staged command creates the new session ──
 console.log("continue tail (staged /continue <docPath>):");
 {
@@ -997,6 +1103,218 @@ console.log("lifecycle pairing:");
 			pairs.length === 1 &&
 			!!pairs[0].payload.error,
 		JSON.stringify(p.emitted),
+	);
+}
+
+// ── 8. document-file extraction (D4 allowlist/denylist + D5 union) ──
+console.log("document-file extraction:");
+{
+	const DENY = ["/agent/tmp", "/agent/data/pi-handoff"];
+	const gitCtx = {
+		repos: [
+			{
+				workingDirectory: "/repo",
+				path: ".",
+				branch: "main",
+				status: [
+					"?? docs/new-dir/notes.md", // untracked FILE in a new dir (the --untracked-files=all row)
+					" M README.md",
+					"R  old/spec.txt -> new/spec.txt", // rename → NEW path
+				'R  "old/caf\\303\\251.md" -> "new/plain.md"', // QUOTED rename (both sides C-quoted)
+				'R  plain.md -> "new/caf\\303\\251.md"', // MIXED rename: plain left, quoted right
+					'?? "caf\\303\\251-menu.md"', // C-quoted (caf\303\251 = é)
+					"?? node_modules/pkg/readme.md", // denylist fragment
+					" M src/index.ts", // non-document extension
+					"?? scratch.log", // non-document extension
+					" D dropped.md", // deleted → nothing to hand off
+				].join("\n"),
+				diffStat: "",
+				recentCommits: "",
+			},
+		],
+	};
+	const branch = [
+		{ id: "u1", type: "message", message: { role: "user", content: "go" } },
+		{
+			id: "a1",
+			type: "message",
+			message: {
+				role: "assistant",
+				content: [
+					{ type: "text", text: "Writing docs." },
+					{
+						type: "toolCall",
+						name: "write",
+						arguments: { path: "/repo/docs/plan.md" },
+					},
+					{ type: "toolCall", name: "edit", arguments: { path: "/repo/README.md" } },
+					{
+						type: "toolCall",
+						name: "write",
+						arguments: { path: "/outside/standalone.md" },
+					},
+					{
+						type: "toolCall",
+						name: "write",
+						arguments: { path: "/agent/tmp/scratch.md" },
+					},
+					{
+						type: "toolCall",
+						name: "write",
+						arguments: { path: "/agent/data/pi-handoff/handoff-x.md" },
+					},
+					{
+						type: "toolCall",
+						name: "read",
+						arguments: { path: "/repo/other-notes.md" },
+					},
+					{ type: "toolCall", name: "bash", arguments: { command: "echo hi" } },
+				],
+			},
+		},
+	];
+	const files: DocumentFile[] = extractDocumentFiles(
+		gitCtx as any,
+		// The extractor consumes AgentMessage[] (entry.message values) — the
+		// same shape the gatherer passes from getHandoffMessages.
+		branch.map((e: any) => e.message),
+		DENY,
+		"/wsp",
+	);
+	const find = (p: string) => files.find((f) => f.path === p);
+
+	check(
+		"untracked file inside a NEW dir yields the FILE (--untracked-files=all row)",
+		find("/repo/docs/new-dir/notes.md")?.provenance === "git-only",
+		JSON.stringify(files),
+	);
+	check(
+		"rename row yields the NEW path only",
+		find("/repo/new/spec.txt")?.provenance === "git-only" &&
+			!find("/repo/old/spec.txt"),
+		JSON.stringify(files),
+	);
+	check(
+		"quoted rename (both sides) yields decoded NEW path",
+		find("/repo/new/plain.md")?.provenance === "git-only" &&
+			!find("/repo/old/caf\u00e9.md"),
+		JSON.stringify(files),
+	);
+	check(
+		"mixed rename (plain -> quoted right) yields decoded NEW path",
+		find("/repo/new/caf\u00e9.md")?.provenance === "git-only" &&
+			!find("/repo/plain.md"),
+		JSON.stringify(files),
+	);
+	check(
+		"C-quoted path is unquoted",
+		find("/repo/café-menu.md")?.provenance === "git-only" &&
+			!find('/repo/"caf\\303\\251-menu.md"'),
+		JSON.stringify(files),
+	);
+	check(
+		"denylist fragments excluded (node_modules)",
+		!files.some((f) => f.path.includes("node_modules")),
+		JSON.stringify(files),
+	);
+	check(
+		"non-document extensions excluded",
+		!find("/repo/src/index.ts") && !find("/repo/scratch.log"),
+		JSON.stringify(files),
+	);
+	check(
+		"deleted rows excluded (no file left to hand off)",
+		!find("/repo/dropped.md"),
+		JSON.stringify(files),
+	);
+	check(
+		"in-session provenance from write/edit tool calls; reads ignored",
+		find("/repo/docs/plan.md")?.provenance === "in-session" &&
+			find("/outside/standalone.md")?.provenance === "in-session" &&
+			!find("/repo/other-notes.md"),
+		JSON.stringify(files),
+	);
+	check(
+		"agent-dir tmp + data/pi-handoff denied",
+		!find("/agent/tmp/scratch.md") &&
+			!find("/agent/data/pi-handoff/handoff-x.md"),
+		JSON.stringify(files),
+	);
+	check(
+		"dedupe: in-session wins over git-only when both sources hit",
+		JSON.stringify(files.filter((f) => f.path === "/repo/README.md")) ===
+			JSON.stringify([{ path: "/repo/README.md", provenance: "in-session" }]),
+		JSON.stringify(files),
+	);
+	check(
+		"order: in-session rows first, alphabetical within each group",
+		JSON.stringify(files.map((f) => `${f.path} ${f.provenance}`)) ===
+			JSON.stringify([
+				"/outside/standalone.md in-session",
+				"/repo/README.md in-session",
+				"/repo/docs/plan.md in-session",
+				"/repo/café-menu.md git-only",
+				"/repo/docs/new-dir/notes.md git-only",
+				"/repo/new/café.md git-only",
+				"/repo/new/plain.md git-only",
+				"/repo/new/spec.txt git-only",
+			]),
+		JSON.stringify(files),
+	);
+
+	check(
+		"deny dirs resolve from the agent dir",
+		(() => {
+			process.env.PI_CODING_AGENT_DIR = "/agent";
+			return (
+				JSON.stringify(documentDenyDirs()) ===
+				JSON.stringify(["/agent/tmp", "/agent/data/pi-handoff"])
+			);
+		})(),
+		JSON.stringify(documentDenyDirs()),
+	);
+
+	// Live git: the status exec must be uncollapsed — a file inside an
+	// untracked directory must arrive as its own row (the old `?? dir/`
+	// collapse would hide it from extraction entirely).
+	const liveRepo = mkdtempSync(join(tmpdir(), "pih-gitrepo-"));
+	scratchDirs.push(liveRepo);
+	execSync("git init -q", { cwd: liveRepo });
+	execSync(
+		"git -c user.email=t@t -c user.name=t commit -q --allow-empty -m init",
+		{
+			cwd: liveRepo,
+		},
+	);
+	mkdirSync(join(liveRepo, "fresh-dir"), { recursive: true });
+	writeFileSync(join(liveRepo, "fresh-dir", "idea.md"), "note");
+	writeFileSync(join(liveRepo, "code.ts"), "export {};");
+	// git resolves the toplevel through symlinks (macOS /var → /private/var)
+	const realRepo = realpathSync(liveRepo);
+	const liveGit = getGitContext(liveRepo);
+	const liveStatus: string = liveGit?.repos[0]?.status ?? "";
+	const liveFiles: DocumentFile[] = extractDocumentFiles(
+		liveGit,
+		[],
+		documentDenyDirs(),
+		liveRepo,
+	);
+	check(
+		"live git status lists the file inside the untracked dir (no ?? dir/ collapse)",
+		liveStatus
+			.split("\n")
+			.some((l) => l.endsWith(join("fresh-dir", "idea.md"))) &&
+			!liveStatus.split("\n").includes("?? fresh-dir/"),
+		JSON.stringify(liveStatus),
+	);
+	check(
+		"live extraction yields the new-dir document as git-only, code filtered",
+		liveFiles.some(
+			(f) =>
+				f.path === join(realRepo, "fresh-dir", "idea.md") &&
+				f.provenance === "git-only",
+		) && !liveFiles.some((f) => f.path === join(realRepo, "code.ts")),
+		JSON.stringify(liveFiles),
 	);
 }
 

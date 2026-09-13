@@ -71,6 +71,9 @@ Recent changes:
 Recent commits:
 - abc1234 message
 
+## Document Files
+[One `- <path> — <in-session|git-only> — <optional one-line what-it-is>` line per document file created or edited this session — omit the section when there are none. The annotation is optional for git-only rows.]
+
 ## Active Tasks
 - [ ] pending task
 - [x] completed task
@@ -88,9 +91,25 @@ Invoke on start: skill-a, skill-b
 This is a handoff from a previous session. Phase adherence as defined in the system prompt is mandatory — classify this request through CLASSIFICATION and follow the appropriate phase workflow. Do not skip phases.
 ```
 
-This template mirrors `domain/handoff-template.ts` (`HANDOFF_OUTPUT_TEMPLATE`)
-— keep the two in sync. The detached mode's system prompt embeds the same
-template from that constant.
+This block mirrors `HANDOFF_OUTPUT_TEMPLATE` in
+`domain/handoff-template.ts`; a smoke check enforces byte-equality between
+this fenced block and that constant — never edit one without the other. The
+detached mode's system prompt embeds the same constant.
+
+### `## Document Files` — compute the list yourself
+
+On this warm path the extension does not gather the list for you. Before
+writing the document, derive it under the same definition the extension
+uses:
+
+- Files you wrote or edited this session (your own `write`/`edit` calls)
+  are `in-session`.
+- Files shown by `git status --short --untracked-files=all` (run it per
+  relevant repo) that you did not touch in-session are `git-only`.
+- Only document files count: `.md`, `.txt`, `.rst`, `.adoc`. Never list
+  anything under `node_modules/`, `.git/`, `dist/`, `build/`,
+  `$PI_CODING_AGENT_DIR/tmp/`, or `$PI_CODING_AGENT_DIR/data/pi-handoff/`
+  (handoff documents themselves). Omit the section when nothing qualifies.
 
 Non-negotiable rules:
 
@@ -104,6 +123,9 @@ Non-negotiable rules:
 - **`## Phase Adherence`** — write the paragraph verbatim as shown. The
   extension appends its own canonical copy to the live message regardless;
   keeping the document consistent still matters.
+- **Provenance header is machine-stamped.** The extension writes the
+  `<!-- pi-handoff … -->` header line onto the saved document itself — do
+  NOT write that header; it is never model-authored.
 - Do NOT write anything after `## Phase Adherence`.
 
 ## The `continue` tool

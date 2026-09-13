@@ -72,6 +72,22 @@ export interface GitContext {
 	repos: GitRepoState[];
 }
 
+/**
+ * A document file tracked for the handoff's `## Document Files` section
+ * (definition: domain/document-files.ts — allowlist + denylist, D4).
+ */
+export interface DocumentFile {
+	/** Absolute, normalized path. */
+	path: string;
+	/**
+	 * `in-session` = written/edited via this session's tool calls;
+	 * `git-only` = only visible in git status. A tool-log hit wins when both
+	 * sources see the same file — never created/edited (unknowable: `write`
+	 * overwrites).
+	 */
+	provenance: "in-session" | "git-only";
+}
+
 export interface HandoffOriginData {
 	parentSession: string | undefined;
 	goal: string | null;
@@ -140,6 +156,8 @@ export interface HandoffContext {
 	messageCount?: number;
 	todos: string | null;
 	git: GitContext | null;
+	/** Document files created/edited this session — populated by the gatherer once git context lands. */
+	documentFiles: DocumentFile[];
 	skills: string | null;
 	cwd: string;
 	contextUsage: ContextUsage | undefined;

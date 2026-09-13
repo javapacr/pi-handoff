@@ -50,7 +50,10 @@ function getRepoState(repoPath: string, displayPath: string): GitRepoState {
 		workingDirectory: runGit("rev-parse --show-toplevel", repoPath),
 		path: displayPath,
 		branch: runGit("rev-parse --abbrev-ref HEAD", repoPath),
-		status: runGit("status --short", repoPath),
+		// --untracked-files=all expands untracked directories to individual
+		// files (same exec count) — the collapsed `?? dir/` form hides exactly
+		// the freshly-created files document-file extraction must see.
+		status: runGit("status --short --untracked-files=all", repoPath),
 		diffStat: runGit("diff --stat HEAD", repoPath),
 		recentCommits: runGit("log --oneline -8", repoPath),
 	};

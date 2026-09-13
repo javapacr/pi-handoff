@@ -56,9 +56,7 @@ export function getHandoffMessages(branch: SessionEntry[]): AgentMessage[] {
 
 	const compactedBranch = [
 		compaction,
-		...(firstKeptIndex >= 0
-			? branch.slice(firstKeptIndex, compactionIndex)
-			: []),
+		...(firstKeptIndex >= 0 ? branch.slice(firstKeptIndex, compactionIndex) : []),
 		...branch.slice(compactionIndex + 1),
 	];
 
@@ -102,9 +100,7 @@ export function extractTodos(branch: SessionEntry[]): string | null {
 		// Built-in: details.todos with { id, text, done }
 		if (details?.todos && Array.isArray(details.todos)) {
 			if (details.todos.length > 0) {
-				lastTodos = details.todos.map(
-					(t) => `- [${t.done ? "x" : " "}] ${t.text}`,
-				);
+				lastTodos = details.todos.map((t) => `- [${t.done ? "x" : " "}] ${t.text}`);
 			}
 		}
 	}
@@ -166,6 +162,7 @@ export function buildHandoffContext(
 		messageCount: messages.length,
 		todos: extractTodos(branch),
 		git: null, // populated separately by the git client
+		documentFiles: [], // populated by the gatherer once git context lands
 		skills: extractSkillList(ctx),
 		cwd: ctx.cwd,
 		contextUsage: extractContextUsage(ctx),

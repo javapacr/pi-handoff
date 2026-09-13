@@ -8,7 +8,14 @@
 import type { ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import type { HandoffContext } from "../domain/types";
 import { getGitContext } from "../infrastructure/git-client";
-import { buildHandoffContext } from "../infrastructure/session-adapter";
+import {
+	buildHandoffContext,
+	getHandoffMessages,
+} from "../infrastructure/session-adapter";
+import {
+	documentDenyDirs,
+	extractDocumentFiles,
+} from "../infrastructure/document-files";
 
 export interface GatheredContext {
 	context: HandoffContext;
@@ -22,6 +29,14 @@ export function gatherHandoffContext(
 ): GatheredContext {
 	const handoffContext = buildHandoffContext(ctx);
 	handoffContext.git = getGitContext(ctx.cwd, handoffContext.conversationText);
+	// Document-file tracking consumes exactly what the git client already
+	// fetched (no extra execs) plus this session's write/edit tool calls.
+	handoffContext.documentFiles = extractDocumentFiles(
+		handoffContext.git,
+		getHandoffMessages(ctx.sessionManager.getBranch()),
+		documentDenyDirs(),
+		ctx.cwd,
+	);
 
 	return {
 		context: handoffContext,

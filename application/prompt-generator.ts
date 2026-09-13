@@ -12,6 +12,7 @@ import type {
 } from "@earendil-works/pi-coding-agent";
 import type {
 	ContextUsage,
+	DocumentFile,
 	GitContext,
 	HandoffPromptResult,
 	HandoffSettings,
@@ -102,7 +103,7 @@ function resolveHandoffModel(
 }
 
 function buildSystemPrompt(goal: string | null): string {
-	return `You are a context transfer assistant. You receive a conversation history plus structured metadata (todos, git state, loaded skills, working directory, context usage).
+	return `You are a context transfer assistant. You receive a conversation history plus structured metadata (todos, git state, document files, loaded skills, working directory, context usage).
 
 ${handoffGoalBlock(goal)}
 
@@ -130,6 +131,7 @@ function buildUserPayload(opts: {
 	conversationText: string;
 	todos: string | null;
 	git: GitContext | null;
+	documentFiles: DocumentFile[];
 	skills: string | null;
 	cwd: string;
 	contextUsage: ContextUsage | undefined;
@@ -158,6 +160,14 @@ function buildUserPayload(opts: {
 				: lines.join("\n");
 		});
 		sections.push(`## Git Context\n\n${repoSections.join("\n\n")}`);
+	}
+
+	if (opts.documentFiles.length > 0) {
+		sections.push(
+			`## Document Files\n\n${opts.documentFiles
+				.map((file) => `- ${file.path} — ${file.provenance}`)
+				.join("\n")}`,
+		);
 	}
 
 	if (opts.skills) {
@@ -189,6 +199,7 @@ export interface PromptGenerationInput {
 	conversationText: string;
 	todos: string | null;
 	git: GitContext | null;
+	documentFiles: DocumentFile[];
 	skills: string | null;
 	cwd: string;
 	contextUsage: ContextUsage | undefined;
@@ -210,6 +221,7 @@ export async function generateHandoffPrompt(
 		conversationText: input.conversationText,
 		todos: input.todos,
 		git: input.git,
+		documentFiles: input.documentFiles,
 		skills: input.skills,
 		cwd: input.cwd,
 		contextUsage: input.contextUsage,
