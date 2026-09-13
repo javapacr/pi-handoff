@@ -6,8 +6,10 @@
  * transform the extension as CJS and its require-hook bypasses ESM module
  * hooks), and the repo devDep versions of @earendil-works/* drift from pi's
  * runtime aliases. So we copy the repo's .ts tree into a temp ESM context,
- * register module hooks that stub those packages (plus the LLM adapter, see
- * hooks.mjs / stub-llm-client.mjs), and import the staged index.ts.
+ * register module hooks that stub those packages, and import the staged
+ * index.ts. Generation runs for real through infrastructure/llm-client.ts —
+ * the executor smoke supplies a capturing mock `ModelRegistry` whose
+ * `complete` serves the canned handoff document (makeRegistryCapture below).
  *
  * Every scratch dir lives under os.tmpdir() and PI_CODING_AGENT_DIR is
  * repointed per block — the real ~/.pi is never touched.
@@ -166,7 +168,16 @@ function makeMockCtx(over: any = {}) {
 		mode: "tui",
 		cwd: tmpdir(),
 		model: { id: "stub-model", provider: "stub" },
-		modelRegistry: { getAvailable: () => [], find: () => undefined },
+		modelRegistry: {
+			getAvailable: () => [],
+			find: () => undefined,
+			// Tripwire: only executor runs carry the capturing registry.
+			complete: async () => {
+				throw new Error(
+					"stub: registry.complete called in a non-generation smoke context",
+				);
+			},
+		},
 		ui: {
 			notify: () => {},
 			setEditorText: (t: string) => mock.editorTexts.push(t),
@@ -346,10 +357,72 @@ interface ExecutorRun {
 	compactCalls: number;
 	newSessionCalls: number;
 	editorCalls: number;
+	registry: RegistryCapture;
+}
+
+/** Mock `ModelRegistry` capture for the executor's generation path. */
+interface RegistryCapture {
+	/** Every `complete(model, context, options)` invocation, in order. */
+	calls: Array<{ model: any; context: any; options: any }>;
+	/** getApiKeyAndHeaders calls — must stay 0: the adapter must not
+	 * hand-resolve auth (that hand-rolling is what dropped Bedrock env/baseUrl). */
+	getApiKeyCalls: number;
+	/** Model ids that hard-fail on generation (fallback-loop fixture). */
+	failModelIds: string[];
+	registry: any;
+}
+
+/** Models the executor mock registry offers; `stub-model` mirrors ctx.model. */
+const EXECUTOR_MODELS = [
+	{ id: "stub-model", provider: "stub" },
+	{ id: "configured-model", provider: "stub" },
+];
+
+function makeRegistryCapture(doc: string): RegistryCapture {
+	const capture: RegistryCapture = {
+		calls: [],
+		getApiKeyCalls: 0,
+		failModelIds: [],
+		registry: undefined,
+	};
+	capture.registry = {
+		getAvailable: () => EXECUTOR_MODELS,
+		find: (provider: string, id: string) =>
+			EXECUTOR_MODELS.find((m) => m.provider === provider && m.id === id),
+		getApiKeyAndHeaders: async () => {
+			capture.getApiKeyCalls++;
+			return { ok: true, apiKey: "key", headers: {} };
+		},
+		complete: async (model: any, context: any, options: any) => {
+			capture.calls.push({ model, context, options });
+			if (capture.failModelIds.includes(model.id)) {
+				throw new Error(
+					`Validation error: The provided model identifier is invalid (${model.id})`,
+				);
+			}
+			if (!doc) {
+				return {
+					role: "assistant",
+					content: [],
+					stopReason: "error",
+					errorMessage: "stub: executor smoke supplied no handoff document",
+				};
+			}
+			return {
+				role: "assistant",
+				content: [{ type: "text", text: doc }],
+				stopReason: "stop",
+			};
+		},
+	};
+	return capture;
 }
 
 /** Drive executeHandoff end-to-end with a canned generated document. */
-async function runExecutor(doc: string): Promise<ExecutorRun> {
+async function runExecutor(
+	doc: string,
+	opts: { settings?: Record<string, unknown>; failModelIds?: string[] } = {},
+): Promise<ExecutorRun> {
 	const p = makeMockPi();
 	const notes: Array<{ message: string; level: string | undefined }> = [];
 	const editorTexts: string[] = [];
@@ -364,8 +437,12 @@ async function runExecutor(doc: string): Promise<ExecutorRun> {
 		p.emitted.push({ ch, payload });
 	};
 
+	const capture = makeRegistryCapture(doc);
+	capture.failModelIds = opts.failModelIds ?? [];
+
 	const ctx = makeMockCtx({
 		cwd: execCwd,
+		modelRegistry: capture.registry,
 		compact: async () => {
 			compactCalls++;
 		},
@@ -399,15 +476,12 @@ async function runExecutor(doc: string): Promise<ExecutorRun> {
 		},
 	});
 
-	// The stubbed LLM adapter (hooks.mjs → stub-llm-client.mjs) returns this.
-	process.env.PIH_SMOKE_HANDOFF_DOC = doc;
 	await executeHandoff(
 		p.pi,
 		ctx,
 		{ rawArgs: "" },
-		{ diaryReminder: false, terminal: "tmux" },
+		{ diaryReminder: false, terminal: "tmux", ...opts.settings },
 	);
-	delete process.env.PIH_SMOKE_HANDOFF_DOC;
 
 	return {
 		pi: p,
@@ -418,6 +492,7 @@ async function runExecutor(doc: string): Promise<ExecutorRun> {
 		compactCalls,
 		newSessionCalls,
 		editorCalls,
+		registry: capture,
 	};
 }
 
@@ -497,6 +572,49 @@ check(
 );
 check("executor never creates a session", run.newSessionCalls === 0);
 
+console.log("executor generation routing (registry-owned):");
+{
+	const c = run.registry.calls;
+	check(
+		"generation routed through ModelRegistry.complete exactly once",
+		run.registry.calls.length === 1,
+		String(c.length),
+	);
+	check(
+		"registry called with the resolved handoff model (active-model fallback)",
+		c[0]?.model?.id === "stub-model" && c[0]?.model?.provider === "stub",
+		JSON.stringify(c[0]?.model),
+	);
+	check(
+		"adapter does NOT hand-resolve auth — env/baseUrl inheritance stays with the runtime",
+		run.registry.getApiKeyCalls === 0,
+		String(run.registry.getApiKeyCalls),
+	);
+	check(
+		"no auth fields forwarded (apiKey/headers/env left to runtime resolution)",
+		c[0]?.options?.apiKey === undefined &&
+			c[0]?.options?.headers === undefined &&
+			c[0]?.options?.env === undefined,
+		JSON.stringify(c[0]?.options),
+	);
+	check(
+		"request context carries system prompt + one user payload message",
+		c[0]?.context?.systemPrompt?.includes("context transfer assistant") ===
+			true &&
+			c[0]?.context?.messages?.length === 1 &&
+			c[0]?.context?.messages?.[0]?.content?.[0]?.text?.includes(
+				"## Conversation History",
+			) === true,
+		JSON.stringify(c[0]?.context)?.slice(0, 200),
+	);
+	check(
+		"abort signal forwarded to the generation call",
+		c[0]?.options?.signal instanceof AbortSignal &&
+			c[0].options.signal.aborted === false,
+		String(c[0]?.options?.signal),
+	);
+}
+
 console.log("executor (missing ## Next Task):");
 const runBad = await runExecutor(INVALID_DOC);
 const completeBad = runBad.pi.emitted.find(
@@ -537,6 +655,76 @@ check(
 	JSON.stringify(completeBad?.payload),
 );
 check("invalid doc → no session created", runBad.newSessionCalls === 0);
+
+console.log("executor generation cache retention + effort:");
+{
+	const runEffort = await runExecutor(VALID_DOC, {
+		settings: { effort: "low" },
+	});
+	check(
+		"cacheRetention 'none' on the generation call (one-shot detached call)",
+		runEffort.registry.calls.every((c) => c.options.cacheRetention === "none"),
+		JSON.stringify(runEffort.registry.calls.map((c) => c.options.cacheRetention)),
+	);
+	check(
+		"reasoning level forwarded from settings.effort",
+		runEffort.registry.calls[0]?.options?.reasoning === "low" &&
+			runEffort.registry.calls[0]?.options?.reasoningEffort === "low",
+		String(runEffort.registry.calls[0]?.options?.reasoning),
+	);
+	check(
+		"onResponse coarse progress hook forwarded",
+		typeof runEffort.registry.calls[0]?.options?.onResponse === "function",
+	);
+}
+
+console.log(
+	"executor model fallback loop (configured model fails → active model):",
+);
+{
+	const runFallback = await runExecutor(VALID_DOC, {
+		settings: { provider: "stub", model: "configured-model" },
+		failModelIds: ["configured-model"],
+	});
+	const calls = runFallback.registry.calls;
+	check(
+		"configured model tried first, active model second",
+		calls.length === 2 &&
+			calls[0]?.model?.id === "configured-model" &&
+			calls[1]?.model?.id === "stub-model",
+		JSON.stringify(calls.map((c) => c.model?.id)),
+	);
+	check(
+		"per-model failure surfaced as an error notify before the fallback",
+		runFallback.notes.some(
+			(x) => x.level === "error" && x.message.includes("configured-model"),
+		),
+		JSON.stringify(runFallback.notes),
+	);
+	check(
+		"cacheRetention 'none' on BOTH fallback attempts",
+		calls.every((c) => c.options.cacheRetention === "none"),
+		JSON.stringify(calls.map((c) => c.options.cacheRetention)),
+	);
+	const completeFallback = runFallback.pi.emitted.find(
+		(e) => e.ch === "handoff_command_complete",
+	);
+	check(
+		"fallback still saves the doc + emits a success completion",
+		!!completeFallback &&
+			!completeFallback.payload.error &&
+			typeof completeFallback.payload.artifactPath === "string" &&
+			existsSync(completeFallback.payload.artifactPath),
+		JSON.stringify(completeFallback?.payload),
+	);
+	check(
+		"success notify names the fallback model that generated the doc",
+		runFallback.notes.some(
+			(x) => x.level === "info" && x.message.includes("generated with stub-model"),
+		),
+		JSON.stringify(runFallback.notes),
+	);
+}
 
 // ── 4. continue tail: the staged command creates the new session ──
 console.log("continue tail (staged /continue <docPath>):");

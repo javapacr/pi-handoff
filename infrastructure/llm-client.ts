@@ -1,34 +1,36 @@
 /**
  * LLM adapter for handoff prompt generation.
  *
- * Thin wrapper around `streamSimple` that turns a provider response into a
- * plain string while reporting thinking/writing progress as the stream
- * arrives. Returns `null` when the call is aborted.
+ * Routes generation through the pi model runtime (`ModelRegistry.complete`)
+ * instead of hand-resolving auth and calling the raw provider: `complete`
+ * inherits the entire resolution chain (apiKey, headers, baseUrl, and the
+ * provider-scoped `env` that carries Bedrock regional config) by construction.
+ * Hand-assembling a narrowed auth subset is what silently dropped `env` and
+ * broke US cross-region inference profiles invoked from a non-US region.
+ *
+ * `complete()` resolves to the final message only, so streaming progress
+ * degrades to a coarse indicator: `onResponse` fires once the HTTP response
+ * lands. Returns `null` when the call is aborted.
+ *
+ * The detached handoff call is one-shot — nothing ever re-reads the generated
+ * prefix — so the request opts out of prompt caching (`cacheRetention:
+ * "none"`); the default "short" would bill a 1.25× cache-write premium with
+ * no reader. Detached path only; never apply this to warm-path calls.
  */
 
-import {
-	streamSimple,
-	type Message,
-	type Model,
-	type Api,
-	type ThinkingLevel,
-} from "@earendil-works/pi-ai/compat";
+import type {
+	Api,
+	AssistantMessage,
+	Context,
+	Message,
+	Model,
+	ThinkingLevel,
+} from "@earendil-works/pi-ai";
 import type { ModelRegistry } from "@earendil-works/pi-coding-agent";
-
-export interface LlmAuth {
-	ok: boolean;
-	apiKey?: string;
-	headers?: Record<string, string>;
-}
 
 export interface LlmRequest {
 	systemPrompt: string;
 	userPayload: string;
-}
-
-export interface LlmProgress {
-	phase: "thinking" | "writing";
-	chars: number;
 }
 
 export async function generateWithModel(
@@ -37,54 +39,38 @@ export async function generateWithModel(
 	request: LlmRequest,
 	signal: AbortSignal | undefined,
 	effort: ThinkingLevel | undefined,
-	onProgress?: (p: LlmProgress) => void,
+	onResponse?: () => void,
 ): Promise<string | null> {
-	const auth = await registry.getApiKeyAndHeaders(model);
-	if (!auth.ok) {
-		throw new Error(
-			`Authentication failed for handoff model "${model.id}". ` +
-				`Check that the model is enabled and API credentials are configured.`,
-		);
-	}
-
 	const userMessage: Message = {
 		role: "user",
 		content: [{ type: "text", text: request.userPayload }],
 		timestamp: Date.now(),
 	};
 
-	const stream = streamSimple(
-		model,
-		{ systemPrompt: request.systemPrompt, messages: [userMessage] },
-		{
-			apiKey: auth.apiKey,
-			headers: auth.headers,
-			signal,
-			reasoning: effort,
-		},
-	);
+	const context: Context = {
+		systemPrompt: request.systemPrompt,
+		messages: [userMessage],
+	};
 
-	let text = "";
-	let thinkingChars = 0;
+	const result: AssistantMessage = await registry.complete(model, context, {
+		// Raw provider streams read different fields: bedrock maps `reasoning`;
+		// openai-compatible (zai/deepseek/openai) reads `reasoningEffort` only.
+		// Pass both so effort survives the registry facade (streamSimple's
+		// ThinkingLevel mapping is not applied on this path). anthropic-direct
+		// remains unmapped — documented limitation.
+		reasoning: effort,
+		reasoningEffort: effort,
+		signal,
+		cacheRetention: "none",
+		onResponse: () => onResponse?.(),
+	});
 
-	for await (const event of stream) {
-		if (event.type === "thinking_delta") {
-			thinkingChars += event.delta.length;
-			onProgress?.({ phase: "thinking", chars: thinkingChars });
-		} else if (event.type === "text_delta") {
-			text += event.delta;
-			onProgress?.({ phase: "writing", chars: text.length });
-		} else if (event.type === "error") {
-			if (event.reason === "aborted") return null;
-			throw new Error(
-				event.error.errorMessage ??
-					`Model ${model.id} stream failed without an error message`,
-			);
-		}
-	}
-
-	const result = await stream.result();
 	if (result.stopReason === "aborted") return null;
+	if (result.stopReason === "error") {
+		throw new Error(
+			result.errorMessage ?? `Model ${model.id} failed without an error message`,
+		);
+	}
 
 	return result.content
 		.filter(
