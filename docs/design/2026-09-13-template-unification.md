@@ -1,6 +1,7 @@
 # Design — template unification (three backlog items, one contract)
 
 **Date:** 2026-09-13 · **Items:** [handoff-template-rehaul](../backlog/handoff-template-rehaul.md) · [unified-template-continue-linkage](../backlog/unified-template-continue-linkage.md) · [skip-tool-calls-serialization](../backlog/skip-tool-calls-serialization.md)
+**Status:** IMPLEMENTED 2026-09-13 — slice A `e7aadbe`, slice B `4e8e06a`, slice C `91585a0` (preceded by the approved `/handoff` fixes `96acd50`).
 **Provenance:** owner direction 2026-09-13; design pass reviewed adversarially (r2 — all findings applied; the notify-bug diagnosis re-verified in source).
 
 **Scope:** resolve every open question across the three items as one design. **Non-goals:** the two approved `/handoff`-scoped fixes (`bedrock-validation-error`, `cache-retention-none` — they land *before* implementation of this design; entanglement is low: same file `prompt-generator.ts`, disjoint functions, and the smoke harness stubs the LLM); fast-path-payload-pipeline L2 (this supplies its policy half only); no new event/auto-submit surfaces.

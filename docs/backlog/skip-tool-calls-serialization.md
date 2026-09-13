@@ -1,6 +1,6 @@
 # Skip-list for tool calls in session-JSONL parsing — drop side-channel rewrite noise (mempalace, Jira writes)
 
-**Status:** planned — design resolved 2026-09-13 ([design doc](../design/2026-09-13-template-unification.md), decision D9)
+**Status:** DONE 2026-09-13 — implemented (slice C, `91585a0`); design in [design doc](../design/2026-09-13-template-unification.md), decision D9
 
 Owner direction: the session-JSONL → serialized-conversation parsing can
 **skip selected tool calls** that add no handoff value. First named

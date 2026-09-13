@@ -1,6 +1,6 @@
 # `cacheRetention: "none"` on the detached generation call
 
-**Status:** approved — carry out next (owner decision 2026-09-13; scoped to
+**Status:** DONE 2026-09-13 — implemented in `96acd50` (`cacheRetention: "none"` hardcoded inside `generateWithModel` — every attempt, detached path only). Originally approved — carry out next (owner decision 2026-09-13; scoped to
 the `/handoff` command path)
 
 The detached `/handoff` call is one-shot: one system prompt, one

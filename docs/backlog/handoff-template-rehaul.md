@@ -1,6 +1,6 @@
 # Rehaul of handoff generation — agent-driven, template-based, with document-file tracking
 
-**Status:** planned — design resolved 2026-09-13 ([design doc](../design/2026-09-13-template-unification.md), decisions D1–D6)
+**Status:** DONE 2026-09-13 — implemented (slice A, `e7aadbe`); design in [design doc](../design/2026-09-13-template-unification.md), decisions D1–D6
 
 Owner direction: change *how* the handoff document is produced. Ask the
 agent to go through the session and generate the handoff against a defined

@@ -1,6 +1,6 @@
 # All handoff styles emit the same template — `/continue` seeds the next session with previous-session linkage
 
-**Status:** planned — design resolved 2026-09-13 ([design doc](../design/2026-09-13-template-unification.md), decisions D7–D8)
+**Status:** DONE 2026-09-13 — implemented (slice B, `4e8e06a`); design in [design doc](../design/2026-09-13-template-unification.md), decisions D7–D8
 
 Owner direction: whatever surface produces a handoff, the output is **the
 same template** (defined in

@@ -9,7 +9,7 @@ Context handoff for the [pi coding agent](https://github.com/earendil-works/pi) 
 | `/handoff` command | Cold-session path, registered in every session. Interactive slash command that snapshots the session, generates the handoff document in a one-off LLM call on `handoff.provider`/`model`/`effort`, saves it to the handoff data dir, and stages `/continue <docPath>` in the editor to launch the new session. |
 | `/handoff!` quick mode | Quick mode for `/handoff` — skips the editor review step and stages `/continue <docPath>` from the generated document right away. |
 | Streaming progress loader | One continuous loader spans the whole flow with live phase lines: `Gathering context…` → `Memory pre-flight: agent persisting session learnings… (Xs)` (elapsed ticks per second) → `Snapshotting context (N messages, X chars)…` → generation. Escape still cancels. |
-| Model display & streaming counts | Shows which model generates the prompt — `Generating with provider/model (effort: …)` — plus a `fallback: …` line naming the model actually used when the configured one is unavailable, and live output counters as it streams (`thinking… 1.2k`, `writing… 2.3k chars`). After saving, the notify reports `generated with <model-id> in Xs`. |
+| Model display & generation status | Shows which model generates the prompt — `Generating with provider/model (effort: …)` — plus a `fallback: …` line naming the model actually used when the configured one is unavailable, and a coarse `generating…` transition once the response lands (generation runs through pi's model runtime, which exposes no per-token stream). After saving, the notify reports `generated with <model-id> in Xs`. |
 | Diary reminder | Before the handoff prompt is generated, nudges the agent (one injected suggestion) to persist durable session learnings to MemPalace via `mempalace_diary_write`. The agent skips on its own if it already wrote a diary entry this session or nothing is worth recording. Requires the `mempalace_diary_write` tool to be active; disable with `handoff.diaryReminder: false`. |
 | Terminal multiplexer support | Auto-submits the handoff via **tmux** or **herdr** based on config — no manual Enter needed. |
 | Herdr shared memory | When using herdr, stores pane/workspace/tab context to `$AGENT_DIR/.herdr-handoff-context.json` so other extensions can locate this session. |
@@ -18,6 +18,9 @@ Context handoff for the [pi coding agent](https://github.com/earendil-works/pi) 
 | Anchor repo support | When the workspace isn't a git repo itself but contains sub-directory git repos, gathers git state from each sub-repo individually. |
 | Handoff document artifact | Saves the handoff document to the handoff data dir (`$AGENT_DIR/data/pi-handoff/handoff-<timestamp>.md`), not the workspace — the same place `/continue` looks for it. |
 | Sensitive info redaction | Instructs the LLM to redact API keys, passwords, tokens, and PII with `[REDACTED]` placeholders. |
+| Document-file tracking | The handoff template's `## Document Files` section lists document files (`.md`/`.txt`/`.rst`/`.adoc`) created or edited in the session — union of git status (`--untracked-files=all`, catches subagent and manual edits) and the session's write/edit calls, with `in-session`/`git-only` provenance. Code files stay out: git context already carries working-tree state. |
+| Previous-session linkage | Every handoff doc carries a machine-stamped provenance header (`<!-- pi-handoff v2 \| session: … \| saved: … -->`) and the new session receives a hidden `handoff-origin` entry recording the parent session JSONL path and profile — so the next session can consult the original transcript when the doc alone is not enough. The `↩ Continued from previous session` notify surfaces the linkage at session start. |
+| Skip-list for no-value tool calls | `handoff.skipTools` stubs selected tool calls (default: MemPalace diary writes + reconnect, Jira assign/update) out of the serialized conversation before generation — post-hoc memory re-encodings and mutation receipts add noise, not context. Keep-side calls (memory recall, Jira reads) pass through verbatim. |
 | Artifact deduplication | References specs, plans, ADRs, and issues by path/URL instead of duplicating their content. |
 | Suggested skills | Includes a section recommending skills the new session should invoke based on work context. |
 | Phase adherence | Generated prompt ends with a mandatory phase-adherence instruction for the receiving agent. |
@@ -43,7 +46,9 @@ index.ts                          Entry point — unified registration of all th
 ├── domain/
 │   ├── types.ts                  Core types (HandoffSettings, GitContext, etc.)
 │   ├── handoff-prompt.ts         Continuation prompt composer, Next Task validation
-│   └── handoff-template.ts       Shared output template (skill + /handoff)
+│   ├── handoff-template.ts       Versioned output template (skill + /handoff)
+│   ├── document-files.ts         Document-file policy (allowlist + denylist)
+│   └── provenance.ts             Provenance-header stamp helper
 ├── infrastructure/
 │   ├── event-registration.ts     Hooks into pi lifecycle events
 │   ├── event-channels.ts         Lifecycle event channel names + emit helpers
@@ -51,8 +56,10 @@ index.ts                          Entry point — unified registration of all th
 │   ├── tmux-client.ts            Tmux session management
 │   ├── herdr-client.ts           Herdr session management + shared memory
 │   ├── session-adapter.ts        Session file discovery and parsing
-│   ├── llm-client.ts             LLM generation adapter
+│   ├── llm-client.ts             LLM generation adapter (via ModelRegistry)
 │   ├── git-client.ts             Git state extraction
+│   ├── document-files.ts         Document-file extractor (git status ∪ tool log)
+│   ├── tool-skip.ts              handoff.skipTools pre-serialization stub filter
 │   └── config-repository.ts      Settings file loading + agent-dir resolution
 └── ui/
     └── handoff-loader.ts         Custom TUI loader during generation
@@ -113,8 +120,7 @@ Memory pre-flight: agent persisting session learnings… (12s)   ← ticks every
 Snapshotting context (42 messages, 18.4k chars)…
 Generating handoff prompt · context: 18.4k
 Generating with deepseek/deepseek-v4-flash (effort: low)
-Generating with deepseek/deepseek-v4-flash · thinking… 1.2k
-Generating with deepseek/deepseek-v4-flash · writing… 2.3k chars
+Generating with deepseek/deepseek-v4-flash · generating…
 ```
 
 The generation model (and effort level) is always shown before generation starts; if the configured handoff model is unavailable, a `fallback: <model-id>` line names the model actually used. Press Escape at any point to cancel (`prompt: null`, no session created).
@@ -143,7 +149,8 @@ Add an optional `handoff` block to your pi profile's `settings.json` (under `$AG
 | `type` | `"detached"` \| `"in-session"` | — | **Deprecated — parsed for backward compatibility and IGNORED.** The unified flow registers every surface in every session, so this key has no effect; safe to delete. |
 | `provider` | `string` | — | Provider id for the `/handoff` generation model (e.g. `"deepseek"`, `"amazon-bedrock"`). |
 | `model` | `string` | — | Model id used by `/handoff`. Bare id when `provider` is set, or `provider/model` reference. |
-| `effort` | `string` | — | Thinking level for `/handoff` generation (`"low"`, `"medium"`, `"high"`). |
+| `effort` | `string` | — | Thinking level for `/handoff` generation (`"low"`, `"medium"`, `"high"`). Maps natively on Bedrock and OpenAI-compatible providers (zai/deepseek/openai); **unmapped on direct-Anthropic models** — see [docs/backlog/effort-anthropic-direct.md](docs/backlog/effort-anthropic-direct.md). |
+| `skipTools` | `string[]` | mempalace diary + reconnect, Jira assign/update | Glob patterns (`*` = zero-or-more chars) for tool calls to **stub out** of the serialized conversation before generation — post-hoc re-encodings and mutation receipts, not context. Matched against tool-call and tool-result names; a user list **replaces** the defaults; `[]` disables; malformed values are ignored with a warning. Note: repo discovery reads the filtered text, so patterns matching path-carrying tools narrow git-repo discovery accordingly. |
 | `terminal` | `"tmux"` \| `"herdr"` | auto-detect | Which terminal multiplexer to use for auto-submit. When omitted, auto-detects from environment. |
 | `diaryReminder` | `boolean` | `true` | When enabled, `/handoff` nudges the agent to write a MemPalace diary entry (`mempalace_diary_write`) before the handoff prompt is generated. Skipped automatically when the tool is not active. |
 
@@ -186,7 +193,7 @@ The extension emits events on the pi event bus. Other extensions can listen:
 
 ## Testing
 
-`npm test` runs a behavioral smoke suite (63 checks). It stages the repo's TypeScript tree into a temp ESM context, stubs the `@earendil-works/*` runtime packages through node module hooks (repo devDep versions drift from pi's runtime aliases), loads the staged extension, and asserts: identical registration across settings shapes (`handoff.type` set or absent, no settings file), the `/handoff` executor staging `/continue` without creating a session, the continue tool's validate/repair loop, the single-message continuation prompt with canonical Phase Adherence, lifecycle event pairing, stale-ctx emit ordering, and the `/continue` modes (bare → newest doc, generic text, no docs).
+`npm test` runs a behavioral smoke suite (156 checks). It stages the repo's TypeScript tree into a temp ESM context, stubs the `@earendil-works/*` runtime packages through node module hooks (repo devDep versions drift from pi's runtime aliases), loads the staged extension, and asserts: identical registration across settings shapes (`handoff.type` set or absent, no settings file), the `/handoff` executor staging `/continue` without creating a session, registry-routed generation with `cacheRetention: "none"` and intact auth-by-construction, the continue tool's validate/repair loop + provenance stamping, the single-message continuation prompt with canonical Phase Adherence, lifecycle event pairing + the `↩ Continued` origin-entry notify, template/skill byte-sync, document-file extraction (git `--untracked-files=all` + tool-log union), the `/continue` modes (bare → newest doc, generic text, no docs), and the `handoff.skipTools` filter (matcher, defaults, override/disable/malformed, clone-before-mutate).
 
 ## License
 

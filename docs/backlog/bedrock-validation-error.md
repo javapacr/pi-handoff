@@ -1,7 +1,7 @@
 # Detached generation bypasses pi's model runtime — Bedrock `Validation error`
 
-**Status:** approved — carry out next (owner decision 2026-09-13; scoped to
-the `/handoff` command path). Live defect: in the work
+**Status:** DONE 2026-09-13 — implemented in `96acd50` (shape (b): generation routed through `ctx.modelRegistry.complete`; auth/env/baseUrl inherited by construction). Residual tracked separately: [effort-anthropic-direct.md](effort-anthropic-direct.md). Originally approved 2026-09-13, scoped to the
+`/handoff` command path. Live defect: in the work
 profile `/handoff` fails with `Error: Validation error: The provided model
 identifier is invalid.` (twice, then `Error: Handoff failed: …`). Normal chat
 on the same models works, which is what isolates the fault to this path.

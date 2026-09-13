@@ -4,13 +4,13 @@ One file per item in [backlog/](backlog/). This index is the status board — up
 
 | Item | Status |
 | --- | --- |
-| [Detached generation bypasses pi's model runtime — Bedrock `Validation error`](backlog/bedrock-validation-error.md) | approved — next up (2026-09-13), scoped to `/handoff` |
-| [`cacheRetention: "none"` on the detached generation call](backlog/cache-retention-none.md) | approved — next up (2026-09-13), scoped to `/handoff` |
-| [Rehaul of handoff generation — agent-driven template + document-file tracking](backlog/handoff-template-rehaul.md) | planned — design resolved 2026-09-13 ([design](design/2026-09-13-template-unification.md)) |
-| [All handoff styles emit the same template; `/continue` seeds the next session with previous-session linkage](backlog/unified-template-continue-linkage.md) | planned — design resolved 2026-09-13 ([design](design/2026-09-13-template-unification.md)) |
+| [Detached generation bypasses pi's model runtime — Bedrock `Validation error`](backlog/bedrock-validation-error.md) | DONE 2026-09-13 (`96acd50`, registry-routed) |
+| [`cacheRetention: "none"` on the detached generation call](backlog/cache-retention-none.md) | DONE 2026-09-13 (`96acd50`) |
+| [Rehaul of handoff generation — agent-driven template + document-file tracking](backlog/handoff-template-rehaul.md) | DONE 2026-09-13 (slice A `e7aadbe`) |
+| [All handoff styles emit the same template; `/continue` seeds the next session with previous-session linkage](backlog/unified-template-continue-linkage.md) | DONE 2026-09-13 (slice B `4e8e06a`) |
 | [Command-path orphan `pendingAutoSubmit` — stray Enter into the new session](backlog/pending-autosubmit-orphan.md) | open — observe for user-visible effect |
 | [Fast-path detached generation — tiered payload pipeline](backlog/fast-path-payload-pipeline.md) | open — idea |
-| [Skip-list for tool calls in session-JSONL parsing (mempalace, Jira writes)](backlog/skip-tool-calls-serialization.md) | planned — design resolved 2026-09-13 ([design](design/2026-09-13-template-unification.md)) |
+| [Skip-list for tool calls in session-JSONL parsing (mempalace, Jira writes)](backlog/skip-tool-calls-serialization.md) | DONE 2026-09-13 (slice C `91585a0`) |
 | [`handoff.effort` unmapped on anthropic-direct after the registry migration](backlog/effort-anthropic-direct.md) | open — documented limitation, zero current impact |
 | [Own compaction extension — `pi-compact/`](backlog/pi-compact-extension.md) | open — idea |
 | [pi-cache-window — idle prompt-cache countdown + cold-resume advisor](backlog/pi-cache-window.md) | planned 2026-09-11 — parked by owner |
