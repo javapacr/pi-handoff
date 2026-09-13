@@ -11,6 +11,7 @@ One file per item in [backlog/](backlog/). This index is the status board — up
 | [Command-path orphan `pendingAutoSubmit` — stray Enter into the new session](backlog/pending-autosubmit-orphan.md) | open — observe for user-visible effect |
 | [Fast-path detached generation — tiered payload pipeline](backlog/fast-path-payload-pipeline.md) | open — idea |
 | [Skip-list for tool calls in session-JSONL parsing (mempalace, Jira writes)](backlog/skip-tool-calls-serialization.md) | planned — design resolved 2026-09-13 ([design](design/2026-09-13-template-unification.md)) |
+| [`handoff.effort` unmapped on anthropic-direct after the registry migration](backlog/effort-anthropic-direct.md) | open — documented limitation, zero current impact |
 | [Own compaction extension — `pi-compact/`](backlog/pi-compact-extension.md) | open — idea |
 | [pi-cache-window — idle prompt-cache countdown + cold-resume advisor](backlog/pi-cache-window.md) | planned 2026-09-11 — parked by owner |
 | [Detached payload size — does the cold path still earn its keep?](backlog/detached-payload-size.md) | parked 2026-09-13 |
