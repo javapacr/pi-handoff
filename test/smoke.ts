@@ -310,7 +310,10 @@ check(
 	shape(a) === shape(s),
 	`${shape(a)} vs ${shape(s)}`,
 );
-check("type absent → request_handoff tool absent", !a.tools.has("request_handoff"));
+check(
+	"type absent → request_handoff tool absent",
+	!a.tools.has("request_handoff"),
+);
 
 const agentNoSettings = scratchDir("pih-nosettings-");
 process.env.PI_CODING_AGENT_DIR = agentNoSettings;
@@ -712,15 +715,13 @@ console.log("/continue modes:");
 	const p = makeMockPi();
 	handoffExtension(p.pi);
 	const { state, newSession } = makeSessionCapture();
-	await p.commands
-		.get("continue")
-		.handler(
-			"",
-			makeMockCtx({
-				ui: { notify: () => {}, setEditorText: () => {} },
-				newSession,
-			}),
-		);
+	await p.commands.get("continue").handler(
+		"",
+		makeMockCtx({
+			ui: { notify: () => {}, setEditorText: () => {} },
+			newSession,
+		}),
+	);
 	check(
 		"bare /continue → newest doc drives the live message",
 		state.liveMessages[0] === continuationPrompt(newestPath, "Newer task."),
@@ -737,15 +738,13 @@ console.log("/continue modes:");
 	handoffExtension(p2.pi);
 	const cap2 = makeSessionCapture();
 	const genericText = "now implement the parser module";
-	await p2.commands
-		.get("continue")
-		.handler(
-			genericText,
-			makeMockCtx({
-				ui: { notify: () => {}, setEditorText: () => {} },
-				newSession: cap2.newSession,
-			}),
-		);
+	await p2.commands.get("continue").handler(
+		genericText,
+		makeMockCtx({
+			ui: { notify: () => {}, setEditorText: () => {} },
+			newSession: cap2.newSession,
+		}),
+	);
 	check(
 		"generic: live message is text as-is",
 		cap2.state.liveMessages[0] === genericText,
@@ -773,14 +772,12 @@ console.log("/continue modes:");
 	const p3 = makeMockPi();
 	handoffExtension(p3.pi);
 	const notes: string[] = [];
-	await p3.commands
-		.get("continue")
-		.handler(
-			"",
-			makeMockCtx({
-				ui: { notify: (m: string) => notes.push(m), setEditorText: () => {} },
-			}),
-		);
+	await p3.commands.get("continue").handler(
+		"",
+		makeMockCtx({
+			ui: { notify: (m: string) => notes.push(m), setEditorText: () => {} },
+		}),
+	);
 	check(
 		"bare with no docs → clean error",
 		notes.some((m) => m.includes("No handoff documents")),

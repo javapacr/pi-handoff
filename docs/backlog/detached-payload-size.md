@@ -26,4 +26,3 @@ trusted with provider plumbing ([bedrock-validation-error.md](bedrock-validation
 
 Out of scope for [cache-retention-none.md](cache-retention-none.md) and [bedrock-validation-error.md](bedrock-validation-error.md); noted so the planning pass sees the
 whole shape.
-

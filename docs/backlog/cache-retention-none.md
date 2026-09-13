@@ -50,4 +50,3 @@ Re-run-prone → the default already pays for itself on the second call.
 
 - Second-order only: it does not shrink the payload. See [detached-payload-size.md](detached-payload-size.md) for the
   first-order levers.
-
