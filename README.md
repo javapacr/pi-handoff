@@ -58,6 +58,8 @@ index.ts                          Entry point — unified registration of all th
     └── handoff-loader.ts         Custom TUI loader during generation
 ```
 
+Design docs: [docs/design/](design/) — e.g. the 2026-09-13 [template-unification design](design/2026-09-13-template-unification.md) (versioned handoff template, document-file tracking, `/continue` linkage, `handoff.skipTools`) resolving the three open backlog items of that date.
+
 ## Install
 
 ### As a pi extension (local path)

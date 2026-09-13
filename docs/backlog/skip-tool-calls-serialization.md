@@ -1,6 +1,6 @@
 # Skip-list for tool calls in session-JSONL parsing — drop side-channel rewrite noise (mempalace, Jira writes)
 
-**Status:** open, idea (2026-09-13, owner direction + scope recommendation)
+**Status:** planned — design resolved 2026-09-13 ([design doc](../design/2026-09-13-template-unification.md), decision D9)
 
 Owner direction: the session-JSONL → serialized-conversation parsing can
 **skip selected tool calls** that add no handoff value. First named
@@ -48,3 +48,28 @@ in the session; stub the rest.**
   candidates (`lens_diagnostic_mark`, `todo` updates) each get the same
   external-state test.
 - Stub vs full drop — decide via doc-quality diff, not intuition.
+
+### Resolution (2026-09-13 design pass — [design doc](../design/2026-09-13-template-unification.md))
+
+- **Config (D9):** `handoff.skipTools: string[]`, single-token `*` glob
+  (zero-or-more chars, case-sensitive), matched against tool-call
+  `block.name` AND `toolResult.toolName`. User list **replaces** defaults;
+  `[]` disables; malformed value (non-array / non-string entry) → ignored +
+  one-line notify. `tool-skip.ts` self-loads settings — no signature changes.
+- **Defaults (verified):** `*mempalace_diary_write`, `*mempalace_reconnect`
+  (plain + server-prefixed direct forms), `jira_assign_ticket`,
+  `jira_update_status` (pi-atlassian's only writes, verified from source —
+  reads kept). Default ON. `lens_diagnostic_mark` / `todo` NOT defaulted —
+  each needs its own external-state-test decision.
+- **Stub vs drop (D9):** stub — drop the matched assistant `toolCall` block
+  (its args are the noise), replace `toolResult.content` with one line
+  `[skipped by handoff.skipTools: <toolName>]`, touching `content` only and
+  never `details` (protects `extractTodos` by invariant). Hard rule:
+  **clone-before-mutate** — `getHandoffMessages` returns live branch objects
+  by reference. The doc-quality diff stays a slice-C smoke/verification
+  obligation (turn-order coherence + no-mutation checks are specified);
+  real-session doc diffs judge the `lens_diagnostic_mark`/`todo` candidates
+  later.
+- **Placement:** pre-filter on the `AgentMessage[]` in `buildConversationText`
+  before upstream `serializeConversation` (not patchable). Gateway-form
+  invocations (`mcp` + target in arguments) deferred to fast-path L2.

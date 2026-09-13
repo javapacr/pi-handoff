@@ -1,6 +1,6 @@
 # All handoff styles emit the same template — `/continue` seeds the next session with previous-session linkage
 
-**Status:** open, needs planning (2026-09-13, owner direction)
+**Status:** planned — design resolved 2026-09-13 ([design doc](../design/2026-09-13-template-unification.md), decisions D7–D8)
 
 Owner direction: whatever surface produces a handoff, the output is **the
 same template** (defined in
@@ -29,3 +29,26 @@ linkage of the previous session**.
   `request_handoff`, `/continue`, `continue` tool) that already register
   in-session ([in-session-handoff-mode.md](in-session-handoff-mode.md)
   records that unification).
+
+### Resolution (2026-09-13 design pass — [design doc](../design/2026-09-13-template-unification.md))
+
+- **Linkage format (D8):** the existing hidden `handoff-origin` entry is the
+  authoritative record, enriched with `profile` (from `PI_CODING_AGENT_DIR`);
+  `parentSession` (session-JSONL path) is already the identity proxy — no
+  session-uuid API exists. Link existence is never validated (deleted parent
+  JSONL must not block launch — the doc is primary).
+- **Delivery (D8):** both — a machine-stamped provenance header at byte line 1
+  of the doc (humans + the next session's agent read it; no parser touches
+  it) AND the enriched origin entry (machine record). The live first message
+  is byte-identical to today's.
+- **Manual-edit survival (D8):** by construction — the machine record never
+  depends on the doc; the header is stamped only at the two creation surfaces
+  (executor save; `continue` tool, atomic + idempotent) and **`/continue`
+  never writes** (kills bare-path misattribution + TOCTOU clobber). A deleted
+  header is an accepted cosmetic loss.
+- **Unified emission (D7):** one versioned constant + test-enforced skill
+  mirror + one validator at three uniform points — holds by construction, no
+  per-surface format code. Bonus fix shipped in slice B: the `session_start`
+  "↩ Continued" notify never fires today (entry-type mismatch — the lookup
+  filters `type: "custom"` but the origin is a `type: "message"` custom
+  *message*); slice B fixes the lookup and reads `message.details`.
