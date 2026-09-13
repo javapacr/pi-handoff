@@ -1,6 +1,7 @@
 # `cacheRetention: "none"` on the detached generation call
 
-**Status:** open, needs planning (2026-09-12)
+**Status:** approved — carry out next (owner decision 2026-09-13; scoped to
+the `/handoff` command path)
 
 The detached `/handoff` call is one-shot: one system prompt, one
 serialized-transcript payload, one response, and nothing ever reads the

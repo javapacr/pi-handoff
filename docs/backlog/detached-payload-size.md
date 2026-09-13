@@ -1,6 +1,6 @@
 # Detached payload size — does the cold path still earn its keep?
 
-**Status:** open, design question (2026-09-12)
+**Status:** parked (2026-09-13, owner decision)
 
 `cacheRetention` is a 1.25× optimisation. It does not touch the fact that the
 detached call re-sends the **entire conversation** as a fresh prefix on every
