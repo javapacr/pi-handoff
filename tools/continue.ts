@@ -28,6 +28,7 @@ import {
 	findNextTaskContent,
 } from "../domain/handoff-prompt";
 import { resolveTerminalMode } from "../infrastructure/terminal-strategy";
+import { stampIfAbsent } from "../domain/provenance";
 
 export interface ContinueDetails {
 	docPath: string;
@@ -87,7 +88,7 @@ export function registerContinueTool(pi: ExtensionAPI): void {
 
 			let doc: string;
 			try {
-				doc = await fs.readFile(docPath, "utf8");
+				doc = await fs.readFile(docPath, "utf-8");
 			} catch (err) {
 				const message = err instanceof Error ? err.message : String(err);
 				return errorResult(
@@ -115,6 +116,28 @@ export function registerContinueTool(pi: ExtensionAPI): void {
 				findNextTaskContent(doc) ?? "",
 			);
 			const command = `/continue ${docPath}`;
+
+			// D8: stamp the provenance header if absent — idempotent, atomic
+			// (tmp file + rename), non-blocking. This tool runs in the true
+			// parent session as the agent's declared last action, so it is the
+			// stamp point; `/continue` stays write-free. The header is
+			// cosmetic — the hidden handoff-origin entry is the machine record.
+			try {
+				const stamped = stampIfAbsent(doc, ctx.sessionManager.getSessionFile());
+				if (stamped !== doc) {
+					const tmpPath = `${docPath}.tmp-${process.pid}`;
+					await fs.writeFile(tmpPath, stamped, "utf-8");
+					await fs.rename(tmpPath, docPath);
+				}
+			} catch {
+				// Stamp failure must not block the launch. Best-effort tmp
+				// cleanup, notify, and the tool still succeeds.
+				await fs.unlink(`${docPath}.tmp-${process.pid}`).catch(() => {});
+				ctx.ui.notify(
+					`pi-handoff: could not stamp provenance header on ${docPath} — continuing without it`,
+					"warning",
+				);
+			}
 
 			ctx.ui.setEditorText(command);
 

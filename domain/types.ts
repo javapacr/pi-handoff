@@ -94,6 +94,11 @@ export interface HandoffOriginData {
 	timestamp: number;
 	/** Path of the handoff document this session was created from (when known). */
 	docPath?: string;
+	/**
+	 * `resolvePiAgentDir()` value at creation time. No profile API exists —
+	 * the pi agent dir is the only profile signal the extension touches (D8).
+	 */
+	profile: string;
 }
 
 /**

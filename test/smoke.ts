@@ -16,9 +16,11 @@
  */
 import {
 	cpSync,
+	chmodSync,
 	mkdtempSync,
 	writeFileSync,
 	mkdirSync,
+	readdirSync,
 	statSync,
 	existsSync,
 	readFileSync,
@@ -58,6 +60,8 @@ const { findNextTaskContent, buildContinuationPrompt, deriveSessionTitle } =
 const { HANDOFF_OUTPUT_TEMPLATE, HANDOFF_TEMPLATE_VERSION } = await import(
 	join(repo, "domain/handoff-template.ts")
 );
+const { PROVENANCE_HEADER_PREFIX, buildProvenanceHeader, isProvenanceStamped } =
+	await import(join(repo, "domain/provenance.ts"));
 const { extractDocumentFiles, documentDenyDirs } = await import(
 	join(repo, "infrastructure/document-files.ts")
 );
@@ -575,9 +579,34 @@ check(
 		basename(artifactPath).startsWith("handoff-"),
 	String(artifactPath),
 );
+// Slice B: the detached save IS stamped — content === header line + "\n" + doc.
+// The expected stamp is derived exactly as the executor writes it (same template
+// literal, same mock session file); the saved timestamp is read back from the
+// file and validated, never hardcoded.
+const savedContent = existsSync(artifactPath)
+	? readFileSync(artifactPath, "utf8")
+	: null;
+const savedHeader = savedContent?.split("\n", 1)[0];
+const savedAt = savedHeader?.match(/ saved: (\S+) -->$/)?.[1];
 check(
-	"saved doc exists with the generated content",
-	existsSync(artifactPath) && readFileSync(artifactPath, "utf8") === VALID_DOC,
+	"saved doc carries the provenance header as byte line 1",
+	savedHeader !== undefined && savedHeader.startsWith(PROVENANCE_HEADER_PREFIX),
+	JSON.stringify(savedContent?.slice(0, 120)),
+);
+check(
+	"header stamps the mock session file + a parseable ISO-8601 saved time",
+	savedHeader ===
+		`<!-- pi-handoff v${HANDOFF_TEMPLATE_VERSION} | session: /tmp/fake-session.jsonl | saved: ${savedAt} -->` &&
+		savedAt !== undefined &&
+		!Number.isNaN(Date.parse(savedAt)),
+	JSON.stringify(savedHeader),
+);
+check(
+	"rest after the header line byte-equals the generated doc (stamp + newline + doc)",
+	savedHeader !== undefined &&
+		savedContent !== null &&
+		savedContent.slice(savedHeader.length + 1) === VALID_DOC &&
+		isProvenanceStamped(savedContent),
 );
 check("no ui.confirm call (compaction gate removed)", run.confirmCalls === 0);
 check("no ctx.compact call", run.compactCalls === 0);
@@ -900,6 +929,15 @@ console.log("continue tail (staged /continue <docPath>):");
 		JSON.stringify(state.appended),
 	);
 	check(
+		"origin entry profile = resolved agent dir; parentSession/goal/timestamp preserved (D8)",
+		state.appended[0].details?.profile === agentExec &&
+			state.appended[0].details?.parentSession === "/tmp/fake-session.jsonl" &&
+			state.appended[0].details?.goal === null &&
+			typeof state.appended[0].details?.timestamp === "number" &&
+			state.appended[0].details?.templateVersion === undefined,
+		JSON.stringify(state.appended[0].details),
+	);
+	check(
 		"session title derives from the Next Task, not the doc path",
 		state.sessionInfo[0] === VALID_TITLE &&
 			!state.sessionInfo[0].startsWith("Handoff document:"),
@@ -920,6 +958,130 @@ console.log("continue tail (staged /continue <docPath>):");
 		order.indexOf("emit:handoff_command_complete") !== -1 &&
 			order.indexOf("emit:handoff_command_complete") < order.indexOf("newSession"),
 		JSON.stringify(order),
+	);
+}
+
+// ── 4b. session_start origin notify (D8 lookup fix) ──
+console.log("session_start origin notify (D8 lookup fix):");
+{
+	const p = makeMockPi();
+	process.env.PI_CODING_AGENT_DIR = agentExec;
+	handoffExtension(p.pi);
+	const onSessionStart = p.apiOn.find(([e]) => e === "session_start")![1];
+	check(
+		"session_start handler registered",
+		typeof onSessionStart === "function",
+	);
+
+	const notes: Array<{ message: string; level?: string }> = [];
+	const originEntry = (details: unknown) => ({
+		id: "o1",
+		type: "message",
+		parentId: null,
+		timestamp: "2026-09-13T00:00:00.000Z",
+		message: {
+			role: "custom",
+			customType: "handoff-origin",
+			content: "Handed off from: /tmp/parent.jsonl",
+			display: false,
+			details,
+			timestamp: 1,
+		},
+	});
+	const ctxWith = (entries: unknown[]) =>
+		makeMockCtx({
+			sessionManager: {
+				getBranch: () => [],
+				getSessionFile: () => "/tmp/fake-session.jsonl",
+				getLeafId: () => "leaf-1",
+				getEntries: () => entries,
+			},
+			ui: {
+				notify: (message: string, level?: string) => notes.push({ message, level }),
+				setEditorText: () => {},
+			},
+		});
+
+	await onSessionStart(
+		{ reason: "new" },
+		ctxWith([
+			originEntry({
+				parentSession: "/tmp/sessions/2026-09-13T10-22-33-abc-def.jsonl",
+				goal: "Ship the redesign",
+				timestamp: 1,
+				docPath: "/tmp/doc.md",
+				profile: agentExec,
+			}),
+		]),
+	);
+	check(
+		"corrected-shape origin entry → notify fires (lookup fix verified)",
+		notes.length === 1 &&
+			notes[0].level === "info" &&
+			notes[0].message.startsWith("↩ Continued from previous session"),
+		JSON.stringify(notes),
+	);
+	check(
+		"notify carries goal hint + profile + parent session path tail",
+		notes[0]?.message.includes("Ship the redesign") === true &&
+			notes[0]?.message.includes(agentExec) === true &&
+			notes[0]?.message.includes("2026-09-13T10-22-33-abc-def.jsonl") === true,
+		notes[0]?.message,
+	);
+
+	notes.length = 0;
+	await onSessionStart(
+		{ reason: "new" },
+		ctxWith([
+			{
+				id: "u1",
+				type: "message",
+				parentId: null,
+				timestamp: "",
+				message: { role: "user", content: "hello", timestamp: 1 },
+			},
+		]),
+	);
+	check(
+		"origin-less session → no notify",
+		notes.length === 0,
+		JSON.stringify(notes),
+	);
+
+	notes.length = 0;
+	await onSessionStart(
+		{ reason: "new" },
+		ctxWith([
+			{
+				id: "c1",
+				type: "custom",
+				parentId: null,
+				timestamp: "",
+				customType: "handoff-origin",
+				data: {},
+			},
+		]),
+	);
+	check(
+		"phantom custom-entry shape (never written by this extension) → no notify",
+		notes.length === 0,
+		JSON.stringify(notes),
+	);
+
+	notes.length = 0;
+	await onSessionStart(
+		{ reason: "resume" },
+		ctxWith([originEntry({ profile: agentExec })]),
+	);
+	check("reason ≠ new → no notify", notes.length === 0, JSON.stringify(notes));
+
+	notes.length = 0;
+	await onSessionStart({ reason: "new" }, ctxWith([originEntry(undefined)]));
+	check(
+		"origin entry without details → base notify still fires",
+		notes.length === 1 &&
+			notes[0].message === "↩ Continued from previous session",
+		JSON.stringify(notes),
 	);
 }
 
@@ -988,6 +1150,141 @@ check(
 	"repair hint says create parent dir",
 	missing.content[0].text.includes("create the parent directory"),
 );
+
+// ── 5b. continue tool — provenance stamp (D8) ──
+console.log("continue tool — provenance stamp:");
+{
+	const stampDir = scratchDir("pih-stamp-");
+	process.env.PI_CODING_AGENT_DIR = stampDir;
+	const p = makeMockPi();
+	handoffExtension(p.pi);
+	const notes: Array<{ message: string; level?: string }> = [];
+	const editorTexts: string[] = [];
+	const makeToolCtx = () =>
+		makeMockCtx({
+			cwd: stampDir,
+			ui: {
+				notify: (message: string, level?: string) => notes.push({ message, level }),
+				setEditorText: (t: string) => editorTexts.push(t),
+			},
+		});
+
+	// Unstamped doc → stamped after tool success (atomic write respected).
+	const unstampedPath = writeDoc(stampDir, "handoff-unstamped.md", VALID_DOC);
+	const okStamp = await p.tools
+		.get("continue")
+		.execute(
+			"t4",
+			{ docPath: unstampedPath },
+			undefined,
+			undefined,
+			makeToolCtx(),
+		);
+	const stampedOnDisk = readFileSync(unstampedPath, "utf8");
+	const stampedHeader = stampedOnDisk.split("\n", 1)[0];
+	const stampedAt = stampedHeader?.match(/ saved: (\S+) -->$/)?.[1];
+	check(
+		"unstamped doc → tool still succeeds",
+		!okStamp.isError,
+		JSON.stringify(okStamp),
+	);
+	check(
+		"doc stamped after tool success — header line 1 with v-token + mock session file + ISO-8601",
+		stampedHeader !== undefined &&
+			stampedHeader.startsWith(PROVENANCE_HEADER_PREFIX) &&
+			stampedHeader ===
+				`<!-- pi-handoff v${HANDOFF_TEMPLATE_VERSION} | session: /tmp/fake-session.jsonl | saved: ${stampedAt} -->` &&
+			stampedAt !== undefined &&
+			!Number.isNaN(Date.parse(stampedAt)),
+		JSON.stringify(stampedOnDisk.slice(0, 120)),
+	);
+	check(
+		"stamped file body byte-equals the original doc",
+		stampedHeader !== undefined &&
+			stampedOnDisk.slice(stampedHeader.length + 1) === VALID_DOC,
+	);
+	check(
+		"atomic write leaves no .tmp- residue",
+		readdirSync(join(stampDir, "data", "pi-handoff")).every(
+			(f) => !f.includes(".tmp-"),
+		),
+	);
+
+	// Already-stamped doc → byte-unchanged (idempotent), no stamp notify.
+	const preStamped =
+		buildProvenanceHeader("/tmp/fake-session.jsonl") + VALID_DOC;
+	const preStampedPath = writeDoc(stampDir, "handoff-prestamped.md", preStamped);
+	const okPre = await p.tools
+		.get("continue")
+		.execute(
+			"t5",
+			{ docPath: preStampedPath },
+			undefined,
+			undefined,
+			makeToolCtx(),
+		);
+	check("already-stamped doc → tool still succeeds", !okPre.isError);
+	check(
+		"already-stamped doc → file byte-unchanged (idempotent)",
+		readFileSync(preStampedPath, "utf8") === preStamped,
+	);
+	check(
+		"already-stamped doc → no stamp notify",
+		!notes.some((n) => n.message.includes("provenance")),
+		JSON.stringify(notes),
+	);
+
+	// Stamp failure (read-only agent dir) → notify-only; tool still succeeds.
+	const roDir = scratchDir("pih-ro-");
+	process.env.PI_CODING_AGENT_DIR = roDir;
+	const p2 = makeMockPi();
+	handoffExtension(p2.pi);
+	const roNotes: Array<{ message: string; level?: string }> = [];
+	const roEditor: string[] = [];
+	const roPath = writeDoc(roDir, "handoff-ro.md", VALID_DOC);
+	// The stamp writes into the DOC's directory — chmod THAT read-only.
+	const roDataDir = join(roDir, "data", "pi-handoff");
+	chmodSync(roDataDir, 0o555);
+	let roResult: any;
+	try {
+		roResult = await p2.tools.get("continue").execute(
+			"t6",
+			{ docPath: roPath },
+			undefined,
+			undefined,
+			makeMockCtx({
+				cwd: roDir,
+				ui: {
+					notify: (message: string, level?: string) =>
+						roNotes.push({ message, level }),
+					setEditorText: (t: string) => roEditor.push(t),
+				},
+			}),
+		);
+	} finally {
+		chmodSync(roDataDir, 0o755);
+	}
+	check(
+		"stamp failure → tool still succeeds",
+		roResult?.isError !== true,
+		JSON.stringify(roResult),
+	);
+	check(
+		"stamp failure → warning notify names the doc",
+		roNotes.some((n) => n.level === "warning" && n.message.includes(roPath)) ===
+			true,
+		JSON.stringify(roNotes),
+	);
+	check(
+		"stamp failure → editor still staged with /continue",
+		roEditor[0] === `/continue ${roPath}`,
+		JSON.stringify(roEditor),
+	);
+	check(
+		"stamp failure → doc untouched on disk",
+		readFileSync(roPath, "utf8") === VALID_DOC,
+	);
+}
 
 // ── 6. /continue modes ──
 console.log("/continue modes:");
@@ -1079,6 +1376,43 @@ console.log("/continue modes:");
 	);
 }
 
+// ── 6b. hand-edited doc (user deleted the header) — D8 manual-edit survival ──
+console.log("hand-edited doc — /continue stays write-free:");
+{
+	process.env.PI_CODING_AGENT_DIR = agentTool;
+	const p = makeMockPi();
+	handoffExtension(p.pi);
+	const editedPath = writeDoc(agentTool, "handoff-edited.md", VALID_DOC);
+	const { state, newSession } = makeSessionCapture();
+	await p.commands.get("continue").handler(
+		editedPath,
+		makeMockCtx({
+			ui: { notify: () => {}, setEditorText: () => {} },
+			newSession,
+		}),
+	);
+	check(
+		"header-less (hand-edited) doc → /continue still launches",
+		state.liveMessages.length === 1 && state.sessionInfo[0] === VALID_TITLE,
+		JSON.stringify(state.liveMessages),
+	);
+	check(
+		"live message byte-identical to the contract function (no header leak)",
+		state.liveMessages[0] === continuationPrompt(editedPath, VALID_TASK),
+		JSON.stringify(state.liveMessages),
+	);
+	check(
+		"/continue performs no writes — file untouched (not re-stamped)",
+		readFileSync(editedPath, "utf8") === VALID_DOC,
+	);
+	check(
+		"origin entry still records the doc + profile (machine linkage survives manual edits)",
+		state.appended[0]?.details?.docPath === editedPath &&
+			state.appended[0]?.details?.profile === agentTool,
+		JSON.stringify(state.appended),
+	);
+}
+
 // ── 7. lifecycle pairing (invalid doc via /continue <path>) ──
 console.log("lifecycle pairing:");
 {
@@ -1120,8 +1454,8 @@ console.log("document-file extraction:");
 					"?? docs/new-dir/notes.md", // untracked FILE in a new dir (the --untracked-files=all row)
 					" M README.md",
 					"R  old/spec.txt -> new/spec.txt", // rename → NEW path
-				'R  "old/caf\\303\\251.md" -> "new/plain.md"', // QUOTED rename (both sides C-quoted)
-				'R  plain.md -> "new/caf\\303\\251.md"', // MIXED rename: plain left, quoted right
+					'R  "old/caf\\303\\251.md" -> "new/plain.md"', // QUOTED rename (both sides C-quoted)
+					'R  plain.md -> "new/caf\\303\\251.md"', // MIXED rename: plain left, quoted right
 					'?? "caf\\303\\251-menu.md"', // C-quoted (caf\303\251 = é)
 					"?? node_modules/pkg/readme.md", // denylist fragment
 					" M src/index.ts", // non-document extension

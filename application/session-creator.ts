@@ -16,6 +16,7 @@ import type {
 	ExtensionCommandContext,
 } from "@earendil-works/pi-coding-agent";
 import type { HandoffOriginData } from "../domain/types";
+import { resolvePiAgentDir } from "../infrastructure/config-repository";
 
 /**
  * Identity of the CURRENT (handing-off) session needed to create its child.
@@ -79,6 +80,9 @@ export async function createHandoffSession(
 					goal,
 					timestamp: Date.now(),
 					docPath: artifactPath,
+					// D8: agent dir at creation time — the only profile signal
+					// the extension has (no profile API exists).
+					profile: resolvePiAgentDir(),
 				} satisfies HandoffOriginData,
 				timestamp: Date.now(),
 			});

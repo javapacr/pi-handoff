@@ -117,13 +117,12 @@ function parseGitStatusPaths(repo: GitRepoState): string[] {
 		// unquoting — try the quoted separator first, fall back to the LAST
 		// plain arrow (unquoted paths may themselves contain " -> ").
 		const quotedArrow = portion.lastIndexOf('" -> "');
-		const arrow =
-			quotedArrow !== -1 ? quotedArrow : portion.lastIndexOf(" -> ");
+		const arrow = quotedArrow === -1 ? portion.lastIndexOf(" -> ") : quotedArrow;
 		if (arrow !== -1) {
 			// Right side may be quoted even when the left is plain (and vice
 			// versa) — unquote is a no-op for unquoted portions.
 			portion = unquoteGitPath(
-				portion.slice(arrow + (quotedArrow !== -1 ? 5 : 4)),
+				portion.slice(arrow + (quotedArrow === -1 ? 4 : 5)),
 			);
 		} else if (portion.startsWith('"')) {
 			portion = unquoteGitPath(portion);

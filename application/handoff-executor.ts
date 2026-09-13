@@ -28,6 +28,7 @@ import {
 	deriveSessionTitle,
 	findNextTaskContent,
 } from "../domain/handoff-prompt";
+import { stampIfAbsent } from "../domain/provenance";
 import type { GatheredContext } from "./context-gatherer";
 import { generateHandoffPrompt } from "./prompt-generator";
 import { gatherHandoffContext } from "./context-gatherer";
@@ -103,14 +104,24 @@ function printHandoffFallback(
 
 /**
  * Save the final handoff document to the handoff data dir
- * ($AGENT_DIR/data/pi-handoff/handoff-<ISO ts>.md).
+ * ($AGENT_DIR/data/pi-handoff/handoff-<ISO ts>.md), stamped with the
+ * provenance header (D3/D8) — a fresh file, so the stamp is part of the
+ * first write and cannot race or truncate. `sessionFile` is the current
+ * session's JSONL path (omitted from the header when unavailable).
  * Returns the file path, or "" on failure.
  */
-async function saveHandoffArtifact(finalPrompt: string): Promise<string> {
+async function saveHandoffArtifact(
+	finalPrompt: string,
+	sessionFile: string | undefined,
+): Promise<string> {
 	const handoffDocPath = newHandoffDocPath();
 	try {
 		await fs.mkdir(path.dirname(handoffDocPath), { recursive: true });
-		await fs.writeFile(handoffDocPath, finalPrompt, "utf-8");
+		await fs.writeFile(
+			handoffDocPath,
+			stampIfAbsent(finalPrompt, sessionFile),
+			"utf-8",
+		);
 		return handoffDocPath;
 	} catch {
 		return "";
@@ -332,8 +343,13 @@ export async function executeHandoff(
 		finalPrompt = editedPrompt;
 	}
 
-	// Save artifact to the handoff data dir
-	const handoffDocPath = await saveHandoffArtifact(finalPrompt);
+	// Save artifact to the handoff data dir, stamped with the provenance
+	// header linking back to THIS session (session file captured before any
+	// staging — the executor never replaces the session itself).
+	const handoffDocPath = await saveHandoffArtifact(
+		finalPrompt,
+		ctx.sessionManager.getSessionFile(),
+	);
 	if (!handoffDocPath) {
 		// Save failed: rescue the prompt via clipboard + stderr so nothing is
 		// lost — the user can paste it into a new session manually. No staging,

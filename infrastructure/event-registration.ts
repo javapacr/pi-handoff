@@ -14,6 +14,7 @@
  * Supports both tmux and herdr backends via the terminal strategy.
  */
 
+import { basename } from "node:path";
 import type {
 	ExtensionAPI,
 	SessionEntry,
@@ -66,19 +67,37 @@ export function registerHandoffEvents(pi: ExtensionAPI): void {
 	pi.on("session_start", (event, ctx) => {
 		if (event.reason !== "new") return;
 
+		// The origin record is written by createHandoffSession via
+		// sm.appendMessage({role: "custom", …}) — a `type: "message"` entry
+		// carrying `message.customType` + `message.details` (D8). The old
+		// `e.type === "custom"` predicate matched a shape this extension never
+		// writes, so this notify never fired.
 		const entries = ctx.sessionManager.getEntries();
 		const originEntry = entries.find(
-			(e): e is Extract<SessionEntry, { type: "custom" }> =>
-				e.type === "custom" &&
-				(e as unknown as { customType?: string }).customType ===
-					"handoff-origin",
+			(e): e is Extract<SessionEntry, { type: "message" }> =>
+				e.type === "message" &&
+				e.message.role === "custom" &&
+				e.message.customType === "handoff-origin",
 		);
 
 		if (!originEntry) return;
 
-		const data = (originEntry as unknown as { data?: HandoffOriginData }).data;
+		const message = originEntry.message;
+		const data =
+			message.role === "custom"
+				? (message.details as HandoffOriginData | undefined)
+				: undefined;
 		const goalHint = data?.goal ? `: ${data.goal.slice(0, 50)}` : "";
-		ctx.ui.notify(`↩ Continued from previous session${goalHint}`, "info");
+		const originHints = [
+			data?.profile,
+			data?.parentSession ? basename(data.parentSession) : undefined,
+		]
+			.filter((part): part is string => Boolean(part))
+			.join(", ");
+		ctx.ui.notify(
+			`↩ Continued from previous session${goalHint}${originHints ? ` (${originHints})` : ""}`,
+			"info",
+		);
 	});
 
 	// ── tui_filled_handoff: capture terminal context for auto-submit ────────
