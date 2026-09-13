@@ -92,8 +92,16 @@ export interface HandoffOriginData {
 	parentSession: string | undefined;
 	goal: string | null;
 	timestamp: number;
-	/** Path of the handoff document this session was created from (when known). */
-	docPath?: string;
+	/**
+	 * Full PA-stripped handoff document with its provenance line — the
+	 * durable audit trail of what the new session was seeded with. Lives in
+	 * `details`, which serialization never maps to the LLM (only `content`
+	 * becomes a user message), so the document is not duplicated into
+	 * requests or compaction. Omitted for non-handoff (`/continue <text>`)
+	 * launches. (Replaces the pre-rehaul `docPath` — documents are no longer
+	 * files, design D11.)
+	 */
+	document?: string;
 	/**
 	 * `resolvePiAgentDir()` value at creation time. No profile API exists —
 	 * the pi agent dir is the only profile signal the extension touches (D8).

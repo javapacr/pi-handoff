@@ -5,53 +5,47 @@ description: Hand off the current session's context to a new focused session. Us
 
 # pi-handoff — session handoff flow
 
-You are handing this session's context to a NEW focused session. The handoff
-document is the bridge: the new session's first message carries the document
-path (with a read-first instruction), the document's `## Next Task` section,
-and the canonical `## Phase Adherence` — one message, doc body pulled from
-disk on demand.
+You are handing this session's context to a NEW focused session. There is no
+handoff document file: you fill the template in memory and pass it to the
+`continue` tool inline. The tool stages `/continue`, and the new session's
+first message IS your filled document — the machine-stamped provenance line
+prepended by the extension, the canonical `## Phase Adherence` appended at
+launch.
 
 ## Which entry point?
 
-- **Warm/active session (this one)** — follow the flow below: write the
-  document yourself and call the `continue` tool. The session's history is
+- **Warm/active session (this one)** — follow the flow below: fill the
+  template yourself and call the `continue` tool. The session's history is
   already in the model's prompt cache, so generating the document here is the
   cheap path.
-- **Cold session, or a context that has grown very long** — do NOT write the
-  document yourself. Tell the user to run `/handoff [goal]`: that path
+- **Cold session, or a context that has grown very long** — do NOT fill the
+  template yourself. Tell the user to run `/handoff [goal]`: that path
   snapshots the session and generates the document in a one-off detached LLM
   call on the configured `handoff.provider`/`model`/`effort`. A fresh
   premium-model turn over a cold prefix is expensive there; the detached call
   is not.
 
-Both entry points end in the same tail: the editor is staged with
-`/continue <docPath>`, and the new session starts from that document.
-
 ## The flow (warm/active session — via the `continue` tool)
 
 When the user asks for a handoff (or you propose one and they agree):
 
-1. **Pick the document path.** Data dir:
-   `$PI_CODING_AGENT_DIR/data/pi-handoff/` (resolve `PI_CODING_AGENT_DIR`
-   from the environment; default `~/.pi/agent`). `mkdir -p` it, then use
-   `handoff-<timestamp>.md` — ISO-8601 timestamp with colons/dots as dashes
-   (e.g. `handoff-2026-09-02T18-30-00-000Z.md`; this keeps `/continue`'s
-   newest-doc lookup correct).
-2. **Write the document** to that exact path. The file contains ONLY the
-   document: no preamble, no code fences, no closing remarks. Follow the
-   document contract below.
-3. **Call the `continue` tool** with `{"docPath": "<the exact path>"}`. It
-   validates the document and fills the TUI input with
-   `/continue <docPath>`. If it reports the document is invalid (missing or
-   empty `## Next Task`), fix the file and call it again — the repair loop.
-4. **Stop** — after `continue` succeeds, no further tool calls; keep any
-   reply to one short line. The user confirms the launch (or herdr/tmux
-   auto-submits it), and the new session starts with your `## Next Task`.
+1. **Fill the template.** Compose the complete document in memory, following
+   the document contract below. Nothing is written to disk — no file, no
+   directory, no path. The `## Document Files` section is self-computed (see
+   below).
+2. **Call the `continue` tool** with
+   `{"document": "<the complete filled template>"}` — the full text inline as
+   one string. It validates the document and stages `/continue`. If it
+   reports the document is invalid (missing or empty `## Next Task`), fix the
+   document text and call it again with the full corrected document — the
+   repair loop.
+3. **Stop** — after `continue` succeeds, no further tool calls; keep any
+   reply to one short line. The new session launches when your turn ends
+   (auto-submit under herdr/tmux) or when the user presses Enter.
 
-Note: this session may itself have been started from a previous handoff (a
-"Handoff Context" message with a document path). That does not change
-anything — the new handoff covers the whole conversation, including that
-context.
+Note: this session may itself have been started from a previous handoff. That
+does not change anything — the new handoff covers the whole conversation,
+including that context.
 
 ## Document contract
 
@@ -99,7 +93,7 @@ detached mode's system prompt embeds the same constant.
 ### `## Document Files` — compute the list yourself
 
 On this warm path the extension does not gather the list for you. Before
-writing the document, derive it under the same definition the extension
+composing the document, derive it under the same definition the extension
 uses:
 
 - Files you wrote or edited this session (your own `write`/`edit` calls)
@@ -108,8 +102,8 @@ uses:
   relevant repo) that you did not touch in-session are `git-only`.
 - Only document files count: `.md`, `.txt`, `.rst`, `.adoc`. Never list
   anything under `node_modules/`, `.git/`, `dist/`, `build/`,
-  `$PI_CODING_AGENT_DIR/tmp/`, or `$PI_CODING_AGENT_DIR/data/pi-handoff/`
-  (handoff documents themselves). Omit the section when nothing qualifies.
+  `$PI_CODING_AGENT_DIR/tmp/`, or handoff staging locations. Omit the
+  section when nothing qualifies.
 
 Non-negotiable rules:
 
@@ -121,31 +115,32 @@ Non-negotiable rules:
   "verify the handoff", never meta-commentary. If a goal was given, the Next
   Task serves that goal.
 - **`## Phase Adherence`** — write the paragraph verbatim as shown. The
-  extension appends its own canonical copy to the live message regardless;
-  keeping the document consistent still matters.
-- **Provenance header is machine-stamped.** The extension writes the
-  `<!-- pi-handoff … -->` header line onto the saved document itself — do
-  NOT write that header; it is never model-authored.
+  extension appends its own canonical copy to the new session's first message
+  and strips any trailing variant from the document body; keeping the
+  document consistent still matters.
+- **Provenance header is machine-stamped.** The extension prepends the
+  `<!-- pi-handoff … -->` line to the new session's first message — do NOT
+  write that header; it is never model-authored.
 - Do NOT write anything after `## Phase Adherence`.
 
 ## The `continue` tool
 
-- **Purpose**: fill the TUI input with the `/continue <docPath>` command once
-  the handoff document is complete on disk. It is the LAST step — call it only
-  after the file is written and correct.
-- **Validate-first**: it re-reads the file and rejects it (isError result) if
-  `## Next Task` is missing or empty. Repair and re-call.
+- **Purpose**: stage the `/continue` command that launches the new session.
+  It is the LAST step — call it with the complete filled template as
+  `{"document": …}` (full text inline; nothing is written to disk).
+- **Validate-first**: it rejects the document (isError result) if
+  `## Next Task` is missing or empty. Fix the document text and re-call with
+  the full corrected document.
 - **After success**: stop. Auto-submit (herdr/tmux) or the user's Enter runs
-  `/continue`, which creates the new session — seeded with the document path
-  (the doc is NOT pre-loaded; the new session reads it from disk) — and sends
-  your `## Next Task` plus the canonical Phase Adherence as its live message.
+  `/continue`, which creates the new session — its first message is your
+  filled document, with the machine-stamped provenance line and the canonical
+  Phase Adherence.
 
-## `/continue [docPath | text]`
+## `/continue [text]`
 
-- `/continue <docPath>` — launch from a written handoff document (what the
-  `continue` tool pre-fills). Re-validates before launching.
+- `/continue` (no argument) — relaunches from the newest `continue` tool call
+  in this session: manual recovery when auto-submit missed, and it survives
+  restarts (the document rides the session history).
 - `/continue <text>` — no handoff involved: the text is sent AS-IS as a new
-  session's live message. Useful whenever the user wants to continue in a
-  fresh session with a specific instruction.
-- `/continue` (no argument) — uses the newest `handoff-*.md` in the data dir
-  (manual recovery when auto-submit missed).
+  session's live message. (An old-style document path typed here is just
+  text.)

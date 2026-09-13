@@ -7,9 +7,20 @@
 // emission, [User]:/[Assistant]:/[Tool result]: markers, 2000-char tool
 // result cap, an assistant message emptied of all blocks rendering nothing)
 // so the skipTools slice (D9) can assert stubbing in the SERIALIZED text.
-// convertToLlm stays an identity pass — the real one passes user/assistant/
-// toolResult through unchanged, which is all this suite feeds it.
-export const convertToLlm = (messages) => messages;
+// convertToLlm mirrors upstream core/messages.js: custom messages map to
+// user messages carrying their content text (string → one text block);
+// display/details/customType are dropped. The old identity pass masked the
+// custom→user leak class — custom content becomes a user message in every
+// real LLM request.
+export const convertToLlm = (messages) =>
+	(messages ?? []).map((m) => {
+		if (m?.role !== "custom") return m;
+		const content =
+			typeof m.content === "string"
+				? [{ type: "text", text: m.content }]
+				: m.content;
+		return { role: "user", content, timestamp: m.timestamp };
+	});
 
 const contentText = (content, separator = "\n") => {
 	if (typeof content === "string") return content;

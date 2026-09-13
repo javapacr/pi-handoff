@@ -44,6 +44,11 @@ export const DEFAULT_SKIP_TOOLS = [
 	// extension tools, no prefix variance.
 	"jira_assign_ticket",
 	"jira_update_status",
+	// The `continue` tool call carries the full handoff document in its
+	// arguments — the same document that rides the session as the next
+	// handoff's live first message. Skipping collapses that duplicate copy in
+	// future serializations (no-doc rehaul D11, duplication accounting).
+	"continue",
 ] as const;
 
 /** Non-blocking notify sink (mirrors ctx.ui.notify; optional). */

@@ -1,48 +1,50 @@
 /**
- * continue tool — stages /continue <docPath> for the skill flow.
+ * continue tool — stages bare `/continue` for the skill flow (no-doc rehaul,
+ * design D10).
  *
- * The FINAL step of the handoff: the agent calls it after the handoff
- * document is written and complete on disk. Validates the document — a
- * non-empty `## Next Task` section — and fills the TUI input with the
- * `/continue <docPath>` command. The prefill is `ctx.ui.setEditorText` +
- * `tui_filled_handoff`, so the herdr/tmux auto-submit listener sends Enter
- * after the turn ends and the `/continue` command pushes everything into the
- * next session.
+ * The FINAL step of the handoff: the agent calls it with the complete filled
+ * handoff template as the `document` argument — full text inline, nothing on
+ * disk. The tool validates the document (non-empty `## Next Task` section),
+ * normalizes it (strips a trailing `## Phase Adherence` — the canonical copy
+ * is appended exactly once at launch), and stages bare `/continue` in the TUI
+ * editor. The tool call itself is the document stash: `arguments.document` is
+ * durably in the session branch/JSONL the moment the tool executes, and bare
+ * `/continue` recovers it at launch.
  *
- * On validation failure the tool returns an isError result telling the agent
- * exactly what to repair — the self-healing loop re-runs until the doc is
- * valid or the user aborts. After a success the agent STOPS; the launch is
- * queued.
+ * The tool does NOT create the session (newSession is command-context-only)
+ * and writes NOTHING to the filesystem. On validation failure it returns an
+ * isError result telling the agent exactly what to repair — the self-healing
+ * loop re-calls with the corrected document. After a success the agent STOPS;
+ * the launch happens on turn end (herdr/tmux auto-submit) or via Enter.
  */
 
-import { promises as fs } from "node:fs";
-import { isAbsolute, join } from "node:path";
 import type {
 	ExtensionAPI,
 	ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
 import type { TuiFilledHandoffPayload } from "../domain/types";
 import {
-	buildContinuationPrompt,
 	deriveSessionTitle,
 	findNextTaskContent,
+	stripTrailingPhaseAdherence,
 } from "../domain/handoff-prompt";
+import { buildProvenanceLine } from "../domain/provenance";
 import { resolveTerminalMode } from "../infrastructure/terminal-strategy";
-import { stampIfAbsent } from "../domain/provenance";
 
 export interface ContinueDetails {
-	docPath: string;
 	sessionTitle?: string;
 	suggestedCommand?: string;
-	/** The exact live message the new session will receive (Next Task + canonical Phase Adherence). */
-	liveMessage?: string;
+	/** Provenance line computed at staging time — `/continue` recomputes its own at launch. */
+	provenanceLine?: string;
+	/** The normalized (PA-stripped) document that will seed the new session. */
+	document?: string;
 }
 
-function errorResult(text: string, docPath: string) {
+function errorResult(text: string, document?: string) {
 	return {
 		content: [{ type: "text" as const, text }],
 		isError: true,
-		details: { docPath } satisfies ContinueDetails,
+		details: { document } satisfies ContinueDetails,
 	};
 }
 
@@ -51,93 +53,76 @@ export function registerContinueTool(pi: ExtensionAPI): void {
 		name: "continue",
 		label: "Continue in New Session",
 		description:
-			"Fill the TUI input with the `/continue <docPath>` command once the " +
-			"handoff document is completed on disk. This is the LAST step of the " +
-			"handoff: call it only after the file is written, with the exact docPath " +
-			"from the handoff instruction. It validates the document (non-empty " +
-			"## Next Task section) and queues the new-session launch. On failure it " +
-			"reports what to repair — fix the file and call it again. After a " +
+			"Queue the handoff launch. This is the LAST step of the handoff: " +
+			"call it with the complete filled handoff template as `document` — " +
+			"the full text inline; nothing is written to disk and no file path " +
+			"is involved. It validates the document (non-empty ## Next Task " +
+			"section) and stages the /continue command that launches the new " +
+			"session. On failure it reports what to repair — fix the document " +
+			"text and call it again with the corrected full document. After a " +
 			"success, stop: no further tool calls, one short line at most.",
-		promptSnippet: "Fill TUI with /continue — queues the new-session launch",
+		promptSnippet: "Stage /continue — queues the new-session launch",
 		promptGuidelines: [
-			"Call continue with the exact docPath from the handoff instruction, only after the handoff document is written and complete.",
-			"If the tool reports the document is invalid, fix the reported problem in the file and call it again.",
-			"After a successful continue call, stop — the launch command is filled in the TUI; the user (or auto-submit) confirms it.",
+			"Call continue with the complete filled handoff template as the document argument (full text inline, no file).",
+			"If the tool reports the document is invalid, fix the document text and call it again with the full corrected document.",
+			"After a successful continue call, stop — /continue is filled in the TUI; the user (or auto-submit) confirms it.",
 		],
 		parameters: {
 			type: "object" as const,
 			properties: {
-				docPath: {
+				document: {
 					type: "string",
 					description:
-						"Path to the handoff document you wrote (per the pi-handoff skill path convention).",
+						"The complete filled handoff template, full text inline (per the pi-handoff skill's document contract).",
 				},
 			},
-			required: ["docPath"],
+			required: ["document"],
 		} as any,
 		async execute(
 			_toolCallId,
-			params: { docPath: string },
+			params: { document?: string },
 			_signal,
 			_onUpdate,
 			ctx: ExtensionContext,
 		) {
-			const docPath = isAbsolute(params.docPath)
-				? params.docPath
-				: join(ctx.cwd, params.docPath);
-
-			let doc: string;
-			try {
-				doc = await fs.readFile(docPath, "utf-8");
-			} catch (err) {
-				const message = err instanceof Error ? err.message : String(err);
+			const rawDocument = params.document;
+			if (typeof rawDocument !== "string" || rawDocument.trim().length === 0) {
 				return errorResult(
-					`Handoff document not readable at ${docPath}: ${message}. ` +
-						`Write the handoff document to that exact path (create the parent ` +
-						`directory if needed), then call continue again.`,
-					docPath,
+					`No handoff document provided. Call continue again with ` +
+						`{"document": "<the complete filled handoff template>"} — the ` +
+						`full text inline. Nothing is written to disk; there is no ` +
+						`file or path involved.`,
 				);
 			}
 
-			const liveMessage = buildContinuationPrompt(doc, docPath);
-			if (liveMessage === null) {
+			const task = findNextTaskContent(rawDocument);
+			if (task === null) {
 				return errorResult(
-					`Invalid handoff document at ${docPath}: it has no non-empty ` +
-						`"## Next Task" section. Repair the file so it ends with a ` +
-						`\`## Next Task\` heading followed by the actual work for the new ` +
-						`session, then call continue again. The canonical \`## Phase ` +
-						`Adherence\` section is added automatically — do not write it yourself.`,
-					docPath,
+					`Invalid handoff document: it has no non-empty ` +
+						`\`## Next Task\` section. Fix the DOCUMENT text so it contains ` +
+						`a \`## Next Task\` heading followed by the actual work for the ` +
+						`new session, then call continue again with the full corrected ` +
+						`document. The canonical \`## Phase Adherence\` section is ` +
+						`added automatically at launch — do not write it yourself.`,
+					rawDocument,
 				);
 			}
 
-			const sessionTitle = deriveSessionTitle(
-				null,
-				findNextTaskContent(doc) ?? "",
+			// Normalize: the canonical Phase Adherence is appended exactly once
+			// at launch — a model-authored trailing variant must not ride along
+			// in the body. In-memory only; arguments.document keeps the raw text
+			// and /continue strips again (idempotent) at recovery.
+			const document = stripTrailingPhaseAdherence(rawDocument);
+
+			// Provenance line computed here for the staging record — the launch
+			// RECOMPUTES it, so this must stay pure (no tmp+rename stamp; the
+			// tool performs zero filesystem writes).
+			const provenanceLine = buildProvenanceLine(
+				ctx.sessionManager.getSessionFile(),
 			);
-			const command = `/continue ${docPath}`;
 
-			// D8: stamp the provenance header if absent — idempotent, atomic
-			// (tmp file + rename), non-blocking. This tool runs in the true
-			// parent session as the agent's declared last action, so it is the
-			// stamp point; `/continue` stays write-free. The header is
-			// cosmetic — the hidden handoff-origin entry is the machine record.
-			try {
-				const stamped = stampIfAbsent(doc, ctx.sessionManager.getSessionFile());
-				if (stamped !== doc) {
-					const tmpPath = `${docPath}.tmp-${process.pid}`;
-					await fs.writeFile(tmpPath, stamped, "utf-8");
-					await fs.rename(tmpPath, docPath);
-				}
-			} catch {
-				// Stamp failure must not block the launch. Best-effort tmp
-				// cleanup, notify, and the tool still succeeds.
-				await fs.unlink(`${docPath}.tmp-${process.pid}`).catch(() => {});
-				ctx.ui.notify(
-					`pi-handoff: could not stamp provenance header on ${docPath} — continuing without it`,
-					"warning",
-				);
-			}
+			const sessionTitle = deriveSessionTitle(null, task);
+			const command = "/continue";
 
 			ctx.ui.setEditorText(command);
 
@@ -151,23 +136,23 @@ export function registerContinueTool(pi: ExtensionAPI): void {
 			const mode = resolveTerminalMode();
 			const autoSubmitLabel =
 				mode === "herdr"
-					? "auto-submitting via herdr…"
+					? "The launch auto-submits via herdr on turn end."
 					: mode === "tmux"
-						? "auto-submitting via tmux…"
-						: "Press Enter to run it.";
+						? "The launch auto-submits via tmux on turn end."
+						: "The user presses Enter to run it.";
 
 			return {
 				content: [
 					{
 						type: "text" as const,
-						text: `Handoff document ${docPath} validated (${sessionTitle}). /continue is pre-filled — the new session will be seeded with this path as read-first context and start with the document's Next Task. ${autoSubmitLabel}`,
+						text: `Handoff staged (${sessionTitle}) — /continue is pre-filled. The new session launches on turn end (auto-submit) or via Enter, seeded with your document and its Next Task. ${autoSubmitLabel} Stop now: no further tool calls, one short line at most.`,
 					},
 				],
 				details: {
-					docPath,
 					sessionTitle,
 					suggestedCommand: command,
-					liveMessage,
+					provenanceLine,
+					document,
 				} satisfies ContinueDetails,
 			};
 		},

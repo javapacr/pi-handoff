@@ -1,6 +1,7 @@
 /**
- * Load + behavioral smoke for pi-handoff (unified flow: /handoff → /continue
- * → new session). Run: npm test (from the repo root).
+ * Load + behavioral smoke for pi-handoff (no-doc rehaul W1: the filled
+ * template rides the `continue` toolCall; bare /continue recovers it and
+ * launches the new session). Run: npm test (from the repo root).
  *
  * Self-staging: the repo package.json has no "type": "module" (tsx would
  * transform the extension as CJS and its require-hook bypasses ESM module
@@ -16,7 +17,6 @@
  */
 import {
 	cpSync,
-	chmodSync,
 	mkdtempSync,
 	writeFileSync,
 	mkdirSync,
@@ -55,13 +55,18 @@ const repo = stage;
 
 const { default: handoffExtension } = await import(join(repo, "index.ts"));
 const promptModule = await import(join(repo, "domain/handoff-prompt.ts"));
-const { findNextTaskContent, buildContinuationPrompt, deriveSessionTitle } =
-	promptModule;
+const {
+	findNextTaskContent,
+	buildContinuationPrompt,
+	stripTrailingPhaseAdherence,
+	deriveSessionTitle,
+} = promptModule;
 const { HANDOFF_OUTPUT_TEMPLATE, HANDOFF_TEMPLATE_VERSION } = await import(
 	join(repo, "domain/handoff-template.ts")
 );
-const { PROVENANCE_HEADER_PREFIX, buildProvenanceHeader, isProvenanceStamped } =
-	await import(join(repo, "domain/provenance.ts"));
+const { PROVENANCE_HEADER_PREFIX, isProvenanceStamped } = await import(
+	join(repo, "domain/provenance.ts")
+);
 const { extractDocumentFiles, documentDenyDirs } = await import(
 	join(repo, "infrastructure/document-files.ts")
 );
@@ -85,19 +90,23 @@ const CANONICAL_PA =
 	"## Phase Adherence\nThis is a handoff from a previous session. Phase adherence as defined in the system prompt is mandatory — classify this request through CLASSIFICATION and follow the appropriate phase workflow. Do not skip phases.";
 
 /** Exact expected live first message — contract literal, independent of prod code. */
-function continuationPrompt(docPath: string, task: string): string {
-	return (
-		`Handoff document: ${docPath}\n` +
-		`Read it with the read tool before acting.\n\n` +
-		`${task}\n\n` +
-		`${CANONICAL_PA}`
-	);
+function continuationPrompt(provenanceLine: string, document: string): string {
+	return `${provenanceLine}\n\n${document}\n\n${CANONICAL_PA}`;
 }
 
 const VALID_DOC =
 	"# Handoff\n\n## Context\nDid stuff.\n\n## Next Task\nShip the redesign.\n\n## Phase Adherence\nmodel-authored variant";
 const INVALID_DOC =
 	"# Handoff\n\n## Context\nNo `## Next Task` section at all.";
+/** PA-free minimal fixture for strip/passthrough checks. */
+const PLAIN_DOC = "## Context\nDid the thing.\n\n## Next Task\nDo the thing.";
+/** PLAIN_DOC with a model-authored trailing PA — the strip fixture. */
+const DOC_WITH_TRAILING_PA = `${PLAIN_DOC}\n\n## Phase Adherence\nmodel-authored variant`;
+/** VALID_DOC minus its trailing model-authored PA — expected normalized body. */
+const STRIPPED_DOC = VALID_DOC.slice(
+	0,
+	VALID_DOC.indexOf("\n\n## Phase Adherence"),
+);
 const VALID_TASK = "Ship the redesign.";
 const VALID_TITLE = deriveSessionTitle(null, VALID_TASK);
 
@@ -125,12 +134,19 @@ process.on("exit", () => {
 	}
 });
 
-function writeDoc(agentDir: string, name: string, body: string): string {
-	const dir = join(agentDir, "data", "pi-handoff");
-	mkdirSync(dir, { recursive: true });
-	const docPath = join(dir, name);
-	writeFileSync(docPath, body);
-	return docPath;
+/** Recursive listing of `dir`, sorted — zero-writes assertions (D10/D11). */
+function snapshotDirTree(dir: string): string[] {
+	const out: string[] = [];
+	if (!existsSync(dir)) return out;
+	const walk = (d: string) => {
+		for (const e of readdirSync(d, { withFileTypes: true })) {
+			const p = join(d, e.name);
+			out.push(e.isDirectory() ? `${p}/` : p);
+			if (e.isDirectory()) walk(p);
+		}
+	};
+	walk(dir);
+	return out.sort();
 }
 
 // Deterministic terminal strategy: no multiplexer in the harness.
@@ -188,6 +204,8 @@ function makeMockCtx(over: any = {}) {
 		mode: "tui",
 		cwd: tmpdir(),
 		model: { id: "stub-model", provider: "stub" },
+		// Default staging sink — the default setEditorText below records here.
+		editorTexts: [] as string[],
 		modelRegistry: {
 			getAvailable: () => [],
 			find: () => undefined,
@@ -263,15 +281,46 @@ check(
 		"new task",
 );
 check(
-	"continuation prompt = doc path + read-first + task + canonical PA",
-	buildContinuationPrompt(
-		"## Next Task\nDo the thing.\n\n## Phase Adherence\nmodel variant",
-		"/tmp/doc.md",
-	) === continuationPrompt("/tmp/doc.md", "Do the thing."),
+	"trailing model-authored PA stripped (last heading, final section)",
+	stripTrailingPhaseAdherence(DOC_WITH_TRAILING_PA) === PLAIN_DOC,
+);
+check(
+	"no trailing PA → byte passthrough",
+	stripTrailingPhaseAdherence(PLAIN_DOC) === PLAIN_DOC,
+);
+check(
+	"PA followed by a later section → untouched (not trailing)",
+	stripTrailingPhaseAdherence(
+		`${PLAIN_DOC}\n\n## Phase Adherence\nv\n\n## Afterword\nkept`,
+	) === `${PLAIN_DOC}\n\n## Phase Adherence\nv\n\n## Afterword\nkept`,
+);
+check(
+	"strip is idempotent",
+	stripTrailingPhaseAdherence(
+		stripTrailingPhaseAdherence(DOC_WITH_TRAILING_PA),
+	) === PLAIN_DOC,
+);
+const LAUNCH_PROVENANCE =
+	"<!-- pi-handoff v2 | session: /s.jsonl | saved: 2026-09-13T00:00:00.000Z -->";
+check(
+	"live message = provenance line + document + canonical PA",
+	buildContinuationPrompt(LAUNCH_PROVENANCE, PLAIN_DOC) ===
+		continuationPrompt(LAUNCH_PROVENANCE, PLAIN_DOC),
 );
 check(
 	"invalid doc → continuation null",
-	buildContinuationPrompt("## Context\nx", "/tmp/doc.md") === null,
+	buildContinuationPrompt(LAUNCH_PROVENANCE, "## Context\nx") === null,
+);
+check(
+	"live message opens with the provenance comment (never parsed as content)",
+	buildContinuationPrompt(LAUNCH_PROVENANCE, PLAIN_DOC)!.startsWith(
+		`${LAUNCH_PROVENANCE}\n\n`,
+	),
+);
+check(
+	"findNextTaskContent unaffected by a leading provenance comment line",
+	findNextTaskContent(`${LAUNCH_PROVENANCE}\n\n${DOC_WITH_TRAILING_PA}`) ===
+		"Do the thing.",
 );
 check(
 	"title derives from Next Task first line",
@@ -861,15 +910,55 @@ console.log("executor payload document-files section:");
 	);
 }
 
-// ── 4. continue tail: the staged command creates the new session ──
-console.log("continue tail (staged /continue <docPath>):");
+// ── 4. continue command — bare recovery from the continue toolCall (D10) ──
+console.log("continue command — bare recovery:");
 {
 	const p = makeMockPi();
-	process.env.PI_CODING_AGENT_DIR = agentExec;
+	const agentRecovery = scratchDir("pih-recovery-");
+	process.env.PI_CODING_AGENT_DIR = agentRecovery;
 	handoffExtension(p.pi);
 
-	const staged = run.editorTexts[0] ?? "";
-	const docArg = staged.replace(/^\/continue\s+/, "");
+	// Two staging calls across two assistant messages (repair loop across
+	// turns) — the NEWEST message's document must win. Raw VALID_DOC still
+	// carries the model-authored trailing PA; /continue strips it at launch.
+	const branch = [
+		{
+			id: "u1",
+			type: "message",
+			message: { role: "user", content: "hand off please" },
+		},
+		{
+			id: "a1",
+			type: "message",
+			message: {
+				role: "assistant",
+				content: [
+					{
+						type: "toolCall",
+						id: "tc1",
+						name: "continue",
+						arguments: { document: "# Old\n\n## Next Task\nOlder task." },
+					},
+				],
+			},
+		},
+		{
+			id: "a2",
+			type: "message",
+			message: {
+				role: "assistant",
+				content: [
+					{ type: "text", text: "Staging the handoff." },
+					{
+						type: "toolCall",
+						id: "tc2",
+						name: "continue",
+						arguments: { document: VALID_DOC },
+					},
+				],
+			},
+		},
+	];
 
 	const { state, newSession } = makeSessionCapture();
 	const order = state.order;
@@ -881,56 +970,64 @@ console.log("continue tail (staged /continue <docPath>):");
 		order.push(`emit:${ch}`);
 		p.emitted.push({ ch, payload });
 	};
+	const before = snapshotDirTree(agentRecovery);
 	const ctx = makeMockCtx({
+		sessionBranch: branch,
 		ui: { notify: () => {}, setEditorText: () => {} },
 		newSession,
 	});
 
 	let threw = false;
 	try {
-		await p.commands.get("continue").handler(docArg, ctx);
+		await p.commands.get("continue").handler("", ctx);
 	} catch {
 		threw = true;
 	}
 
-	check(
-		"staged command resolved to the saved doc path",
-		docArg === artifactPath,
-		`${staged} vs ${artifactPath}`,
-	);
 	check("handler survives replacement (no stale throw)", !threw);
-	const visible = [
-		...state.appended.filter((m) => m.role === "user"),
-		...state.liveMessages,
-	];
+	const live = state.liveMessages[0] ?? "";
+	const firstLine = live.split("\n", 1)[0];
+	const savedAt = firstLine.match(/ saved: (\S+) -->$/)?.[1];
+	check(
+		"live message first line is the provenance comment, machine-stamped at launch",
+		firstLine ===
+			`<!-- pi-handoff v${HANDOFF_TEMPLATE_VERSION} | session: /tmp/fake-session.jsonl | saved: ${savedAt} -->` &&
+			savedAt !== undefined &&
+			!Number.isNaN(Date.parse(savedAt)),
+		JSON.stringify(live.slice(0, 120)),
+	);
+	check(
+		"live message = provenance + PA-stripped document + canonical PA",
+		live === continuationPrompt(firstLine, STRIPPED_DOC),
+		JSON.stringify(live),
+	);
+	check(
+		"model-authored PA variant does not ride along; canonical PA is last",
+		!live.includes("model-authored variant") && live.endsWith(CANONICAL_PA),
+	);
+	check(
+		"findNextTaskContent on the live message still extracts the task",
+		findNextTaskContent(live) === VALID_TASK,
+	);
 	check(
 		"exactly one visible user message in the new session",
-		visible.length === 1,
-		JSON.stringify(visible),
+		state.appended.filter((m) => m.role === "user").length === 0 &&
+			state.liveMessages.length === 1,
+		JSON.stringify({ appended: state.appended, live: state.liveMessages }),
 	);
 	check(
-		"live message = doc path + read-first + task + canonical PA",
-		state.liveMessages[0] === continuationPrompt(artifactPath, VALID_TASK),
-		JSON.stringify(state.liveMessages),
-	);
-	check(
-		"no seeded '## Handoff Context' reference",
-		!JSON.stringify(state.appended).includes("## Handoff Context") &&
-			!state.liveMessages.some((t) => t.includes("## Handoff Context")),
-		JSON.stringify(state.appended),
-	);
-	check(
-		"hidden handoff-origin entry carries details.docPath",
+		"hidden handoff-origin entry carries details.document = provenance + stripped doc",
 		state.appended.length === 1 &&
 			state.appended[0].role === "custom" &&
 			state.appended[0].customType === "handoff-origin" &&
 			state.appended[0].display === false &&
-			state.appended[0].details?.docPath === artifactPath,
-		JSON.stringify(state.appended),
+			state.appended[0].details?.document === `${firstLine}\n\n${STRIPPED_DOC}`,
+		JSON.stringify(state.appended[0]?.details?.document?.slice(0, 120)),
 	);
 	check(
-		"origin entry profile = resolved agent dir; parentSession/goal/timestamp preserved (D8)",
-		state.appended[0].details?.profile === agentExec &&
+		"origin entry drops docPath; profile/parentSession/goal/timestamp preserved (D8/D11)",
+		!("docPath" in (state.appended[0].details ?? {})) &&
+			state.appended[0].details?.profile === agentRecovery &&
 			state.appended[0].details?.parentSession === "/tmp/fake-session.jsonl" &&
 			state.appended[0].details?.goal === null &&
 			typeof state.appended[0].details?.timestamp === "number" &&
@@ -938,18 +1035,16 @@ console.log("continue tail (staged /continue <docPath>):");
 		JSON.stringify(state.appended[0].details),
 	);
 	check(
-		"session title derives from the Next Task, not the doc path",
-		state.sessionInfo[0] === VALID_TITLE &&
-			!state.sessionInfo[0].startsWith("Handoff document:"),
+		"session title derives from the Next Task",
+		state.sessionInfo[0] === VALID_TITLE,
 		String(state.sessionInfo[0]),
 	);
 	const completeTail = p.emitted.filter(
 		(e) => e.ch === "handoff_command_complete",
 	)[0];
 	check(
-		"complete carries the task-derived title + artifact path (success)",
+		"complete carries the task-derived title (success)",
 		completeTail?.payload.sessionTitle === VALID_TITLE &&
-			completeTail?.payload.artifactPath === artifactPath &&
 			completeTail?.payload.error === undefined,
 		JSON.stringify(completeTail?.payload),
 	);
@@ -958,6 +1053,135 @@ console.log("continue tail (staged /continue <docPath>):");
 		order.indexOf("emit:handoff_command_complete") !== -1 &&
 			order.indexOf("emit:handoff_command_complete") < order.indexOf("newSession"),
 		JSON.stringify(order),
+	);
+	check(
+		"command launch performs ZERO filesystem writes",
+		JSON.stringify(snapshotDirTree(agentRecovery)) === JSON.stringify(before),
+	);
+
+	// Repair loop WITHIN one assistant message: last matching call wins.
+	const p2 = makeMockPi();
+	handoffExtension(p2.pi);
+	const sameMessageBranch = [
+		{
+			id: "a1",
+			type: "message",
+			message: {
+				role: "assistant",
+				content: [
+					{
+						type: "toolCall",
+						id: "tc1",
+						name: "continue",
+						arguments: { document: INVALID_DOC },
+					},
+					{
+						type: "toolCall",
+						id: "tc2",
+						name: "continue",
+						arguments: { document: VALID_DOC },
+					},
+				],
+			},
+		},
+	];
+	const cap2 = makeSessionCapture();
+	await p2.commands.get("continue").handler(
+		"",
+		makeMockCtx({
+			sessionBranch: sameMessageBranch,
+			newSession: cap2.newSession,
+		}),
+	);
+	check(
+		"repair-loop last-wins within one message (valid call recovered)",
+		cap2.state.liveMessages[0]?.includes(VALID_TASK) === true,
+		JSON.stringify(cap2.state.liveMessages),
+	);
+
+	// Newest-message-wins even when the newer call is invalid → clean error.
+	const p3 = makeMockPi();
+	handoffExtension(p3.pi);
+	const newerInvalidBranch = [
+		{
+			id: "a1",
+			type: "message",
+			message: {
+				role: "assistant",
+				content: [
+					{
+						type: "toolCall",
+						id: "tc1",
+						name: "continue",
+						arguments: { document: VALID_DOC },
+					},
+				],
+			},
+		},
+		{
+			id: "a2",
+			type: "message",
+			message: {
+				role: "assistant",
+				content: [
+					{
+						type: "toolCall",
+						id: "tc2",
+						name: "continue",
+						arguments: { document: INVALID_DOC },
+					},
+				],
+			},
+		},
+	];
+	const notes3: Array<{ message: string; level?: string }> = [];
+	const cap3 = makeSessionCapture();
+	await p3.commands.get("continue").handler(
+		"",
+		makeMockCtx({
+			sessionBranch: newerInvalidBranch,
+			newSession: cap3.newSession,
+			ui: {
+				notify: (message: string, level?: string) =>
+					notes3.push({ message, level }),
+				setEditorText: () => {},
+			},
+		}),
+	);
+	check(
+		"newest message wins even when invalid → error notify, no launch",
+		notes3.some(
+			(n) => n.level === "error" && n.message.includes("## Next Task"),
+		) && cap3.state.liveMessages.length === 0,
+		JSON.stringify({ notes: notes3, live: cap3.state.liveMessages }),
+	);
+	const completeBad = p3.emitted.filter(
+		(e) => e.ch === "handoff_command_complete",
+	)[0];
+	check(
+		"invalid recovered doc → error-tagged completion (start+complete paired)",
+		p3.emitted[0]?.ch === "handoff_command_start" &&
+			completeBad !== undefined &&
+			!!completeBad.payload.error,
+		JSON.stringify(p3.emitted.map((e) => e.ch)),
+	);
+
+	// Restart simulation: a FRESH extension instance + branch rebuilt from
+	// scratch (as loaded from JSONL) still recovers the document.
+	const p4 = makeMockPi();
+	handoffExtension(p4.pi);
+	const cap4 = makeSessionCapture();
+	await p4.commands
+		.get("continue")
+		.handler(
+			"",
+			makeMockCtx({ sessionBranch: branch, newSession: cap4.newSession }),
+		);
+	check(
+		"restart simulation (fresh instance, branch reloaded) → still recovers",
+		cap4.state.liveMessages.length === 1 &&
+			cap4.state.sessionInfo[0] === VALID_TITLE,
+		JSON.stringify(cap4.state.liveMessages),
 	);
 }
 
@@ -1009,7 +1233,8 @@ console.log("session_start origin notify (D8 lookup fix):");
 				parentSession: "/tmp/sessions/2026-09-13T10-22-33-abc-def.jsonl",
 				goal: "Ship the redesign",
 				timestamp: 1,
-				docPath: "/tmp/doc.md",
+				document:
+					"<!-- pi-handoff v2 | session: /tmp/parent.jsonl | saved: 2026-09-13T00:00:00.000Z -->\n\n# Handoff",
 				profile: agentExec,
 			}),
 		]),
@@ -1085,246 +1310,165 @@ console.log("session_start origin notify (D8 lookup fix):");
 	);
 }
 
-// ── 5. continue tool — valid doc + repair loop ──
+// ── 5. continue tool — document inline, staging, ZERO writes (D10) ──
 console.log("continue tool:");
-const agentTool = scratchDir("pih-tool-");
-process.env.PI_CODING_AGENT_DIR = agentTool;
-const toolDocPath = writeDoc(agentTool, "handoff-tool.md", VALID_DOC);
-const toolEditorTexts: string[] = [];
-const toolCtx = makeMockCtx({
-	cwd: agentTool,
-	ui: {
-		notify: () => {},
-		setEditorText: (t: string) => toolEditorTexts.push(t),
-	},
-});
-const ok = await s.tools
-	.get("continue")
-	.execute("t1", { docPath: toolDocPath }, undefined, undefined, toolCtx);
-check("valid doc → no isError", !ok.isError, JSON.stringify(ok));
-check(
-	"editor prefilled with /continue",
-	toolEditorTexts[0] === `/continue ${toolDocPath}`,
-	String(toolEditorTexts),
-);
-check(
-	"tui_filled_handoff emitted with { goal: title, command }",
-	s.emitted.some(
-		(e) =>
-			e.ch === "tui_filled_handoff" &&
-			e.payload.command === `/continue ${toolDocPath}` &&
-			e.payload.goal === VALID_TITLE,
-	),
-	JSON.stringify(s.emitted),
-);
-check(
-	"details carry the canonical liveMessage",
-	ok.details?.liveMessage === continuationPrompt(toolDocPath, VALID_TASK),
-	JSON.stringify(ok.details),
-);
-
-const badPath = writeDoc(agentTool, "handoff-bad.md", INVALID_DOC);
-const bad = await s.tools
-	.get("continue")
-	.execute("t2", { docPath: badPath }, undefined, undefined, toolCtx);
-check("invalid doc → isError", bad.isError === true);
-check(
-	"repair hint mentions ## Next Task",
-	bad.content[0].text.includes("## Next Task"),
-);
-const missing = await s.tools
-	.get("continue")
-	.execute(
-		"t3",
-		{ docPath: join(agentTool, "nope.md") },
-		undefined,
-		undefined,
-		toolCtx,
-	);
-check(
-	"missing file → isError + write hint",
-	missing.isError === true &&
-		missing.content[0].text.includes("Write the handoff document"),
-);
-check(
-	"repair hint says create parent dir",
-	missing.content[0].text.includes("create the parent directory"),
-);
-
-// ── 5b. continue tool — provenance stamp (D8) ──
-console.log("continue tool — provenance stamp:");
 {
-	const stampDir = scratchDir("pih-stamp-");
-	process.env.PI_CODING_AGENT_DIR = stampDir;
+	const agentTool = scratchDir("pih-tool-");
+	process.env.PI_CODING_AGENT_DIR = agentTool;
 	const p = makeMockPi();
 	handoffExtension(p.pi);
-	const notes: Array<{ message: string; level?: string }> = [];
-	const editorTexts: string[] = [];
-	const makeToolCtx = () =>
-		makeMockCtx({
-			cwd: stampDir,
-			ui: {
-				notify: (message: string, level?: string) => notes.push({ message, level }),
-				setEditorText: (t: string) => editorTexts.push(t),
-			},
-		});
+	const toolEditorTexts: string[] = [];
+	const before = snapshotDirTree(agentTool);
+	const toolCtx = makeMockCtx({
+		cwd: agentTool,
+		ui: {
+			notify: () => {},
+			setEditorText: (t: string) => toolEditorTexts.push(t),
+		},
+	});
 
-	// Unstamped doc → stamped after tool success (atomic write respected).
-	const unstampedPath = writeDoc(stampDir, "handoff-unstamped.md", VALID_DOC);
-	const okStamp = await p.tools
+	const ok = await p.tools
 		.get("continue")
-		.execute(
-			"t4",
-			{ docPath: unstampedPath },
-			undefined,
-			undefined,
-			makeToolCtx(),
-		);
-	const stampedOnDisk = readFileSync(unstampedPath, "utf8");
-	const stampedHeader = stampedOnDisk.split("\n", 1)[0];
-	const stampedAt = stampedHeader?.match(/ saved: (\S+) -->$/)?.[1];
+		.execute("t1", { document: VALID_DOC }, undefined, undefined, toolCtx);
+	check("valid document → no isError", !ok.isError, JSON.stringify(ok));
 	check(
-		"unstamped doc → tool still succeeds",
-		!okStamp.isError,
-		JSON.stringify(okStamp),
+		"editor staged with BARE /continue",
+		toolEditorTexts.length === 1 && toolEditorTexts[0] === "/continue",
+		String(toolEditorTexts),
 	);
 	check(
-		"doc stamped after tool success — header line 1 with v-token + mock session file + ISO-8601",
-		stampedHeader !== undefined &&
-			stampedHeader.startsWith(PROVENANCE_HEADER_PREFIX) &&
-			stampedHeader ===
-				`<!-- pi-handoff v${HANDOFF_TEMPLATE_VERSION} | session: /tmp/fake-session.jsonl | saved: ${stampedAt} -->` &&
-			stampedAt !== undefined &&
-			!Number.isNaN(Date.parse(stampedAt)),
-		JSON.stringify(stampedOnDisk.slice(0, 120)),
+		"tui_filled_handoff emitted with { goal: title, command: '/continue' }",
+		p.emitted.filter((e) => e.ch === "tui_filled_handoff").length === 1 &&
+			p.emitted.some(
+				(e) =>
+					e.ch === "tui_filled_handoff" &&
+					e.payload.command === "/continue" &&
+					e.payload.goal === VALID_TITLE,
+			),
+		JSON.stringify(p.emitted),
+	);
+	const stagedLine: string = ok.details?.provenanceLine ?? "";
+	const stagedAt = stagedLine.match(/ saved: (\S+) -->$/)?.[1];
+	check(
+		"details.provenanceLine = machine-stamped line (v-token + session file + ISO-8601)",
+		stagedLine.startsWith(PROVENANCE_HEADER_PREFIX) &&
+			stagedLine ===
+				`<!-- pi-handoff v${HANDOFF_TEMPLATE_VERSION} | session: /tmp/fake-session.jsonl | saved: ${stagedAt} -->` &&
+			stagedAt !== undefined &&
+			!Number.isNaN(Date.parse(stagedAt)),
+		JSON.stringify(stagedLine),
 	);
 	check(
-		"stamped file body byte-equals the original doc",
-		stampedHeader !== undefined &&
-			stampedOnDisk.slice(stampedHeader.length + 1) === VALID_DOC,
+		"details.document is the PA-stripped normalized body",
+		ok.details?.document === STRIPPED_DOC &&
+			!ok.details?.document.includes("## Phase Adherence"),
+		JSON.stringify(ok.details?.document),
 	);
 	check(
-		"atomic write leaves no .tmp- residue",
-		readdirSync(join(stampDir, "data", "pi-handoff")).every(
-			(f) => !f.includes(".tmp-"),
-		),
+		"details.suggestedCommand = bare /continue; title task-derived",
+		ok.details?.suggestedCommand === "/continue" &&
+			ok.details?.sessionTitle === VALID_TITLE,
+		JSON.stringify(ok.details),
+	);
+	check(
+		"success result tells the agent to STOP",
+		ok.content[0].text.includes("Stop"),
+	);
+	check(
+		"ZERO filesystem writes (agent dir unchanged)",
+		JSON.stringify(snapshotDirTree(agentTool)) === JSON.stringify(before),
 	);
 
-	// Already-stamped doc → byte-unchanged (idempotent), no stamp notify.
-	const preStamped =
-		buildProvenanceHeader("/tmp/fake-session.jsonl") + VALID_DOC;
-	const preStampedPath = writeDoc(stampDir, "handoff-prestamped.md", preStamped);
-	const okPre = await p.tools
+	// Trailing-PA variants through the tool: paraphrased body stripped,
+	// no-PA passthrough, non-trailing PA kept.
+	const variantCtx = makeMockCtx({ cwd: agentTool });
+	const runTool = (document: string) =>
+		p.tools
+			.get("continue")
+			.execute("tv", { document }, undefined, undefined, variantCtx);
+	const paraphrased = await runTool(
+		`${PLAIN_DOC}\n\n## Phase Adherence\nauthored variant body`,
+	);
+	check(
+		"paraphrased trailing PA stripped from details.document",
+		paraphrased.details?.document === PLAIN_DOC,
+		JSON.stringify(paraphrased.details?.document),
+	);
+	const noPa = await runTool(PLAIN_DOC);
+	check(
+		"document without trailing PA passes through byte-identical",
+		noPa.details?.document === PLAIN_DOC,
+	);
+	const midPa = await runTool(
+		`${PLAIN_DOC}\n\n## Phase Adherence\nv\n\n## Afterword\nkept`,
+	);
+	check(
+		"non-trailing PA kept (strip only touches the final section)",
+		midPa.details?.document ===
+			`${PLAIN_DOC}\n\n## Phase Adherence\nv\n\n## Afterword\nkept`,
+	);
+
+	// Repair loop: invalid → isError naming the defect; absent/blank → isError.
+	const fillEventsBefore = p.emitted.filter(
+		(e) => e.ch === "tui_filled_handoff",
+	).length;
+	const bad = await runTool(INVALID_DOC);
+	check("invalid document → isError", bad.isError === true);
+	check(
+		"repair hint mentions ## Next Task + fixing the DOCUMENT text",
+		bad.content[0].text.includes("## Next Task") &&
+			bad.content[0].text.includes("DOCUMENT"),
+	);
+	const absent = await p.tools
 		.get("continue")
-		.execute(
-			"t5",
-			{ docPath: preStampedPath },
-			undefined,
-			undefined,
-			makeToolCtx(),
-		);
-	check("already-stamped doc → tool still succeeds", !okPre.isError);
+		.execute("t2", {} as any, undefined, undefined, variantCtx);
+	check("absent document → isError", absent.isError === true);
+	const blank = await runTool("   \n\t");
+	check("blank document → isError", blank.isError === true);
 	check(
-		"already-stamped doc → file byte-unchanged (idempotent)",
-		readFileSync(preStampedPath, "utf8") === preStamped,
-	);
-	check(
-		"already-stamped doc → no stamp notify",
-		!notes.some((n) => n.message.includes("provenance")),
-		JSON.stringify(notes),
-	);
-
-	// Stamp failure (read-only agent dir) → notify-only; tool still succeeds.
-	const roDir = scratchDir("pih-ro-");
-	process.env.PI_CODING_AGENT_DIR = roDir;
-	const p2 = makeMockPi();
-	handoffExtension(p2.pi);
-	const roNotes: Array<{ message: string; level?: string }> = [];
-	const roEditor: string[] = [];
-	const roPath = writeDoc(roDir, "handoff-ro.md", VALID_DOC);
-	// The stamp writes into the DOC's directory — chmod THAT read-only.
-	const roDataDir = join(roDir, "data", "pi-handoff");
-	chmodSync(roDataDir, 0o555);
-	let roResult: any;
-	try {
-		roResult = await p2.tools.get("continue").execute(
-			"t6",
-			{ docPath: roPath },
-			undefined,
-			undefined,
-			makeMockCtx({
-				cwd: roDir,
-				ui: {
-					notify: (message: string, level?: string) =>
-						roNotes.push({ message, level }),
-					setEditorText: (t: string) => roEditor.push(t),
-				},
-			}),
-		);
-	} finally {
-		chmodSync(roDataDir, 0o755);
-	}
-	check(
-		"stamp failure → tool still succeeds",
-		roResult?.isError !== true,
-		JSON.stringify(roResult),
-	);
-	check(
-		"stamp failure → warning notify names the doc",
-		roNotes.some((n) => n.level === "warning" && n.message.includes(roPath)) ===
-			true,
-		JSON.stringify(roNotes),
-	);
-	check(
-		"stamp failure → editor still staged with /continue",
-		roEditor[0] === `/continue ${roPath}`,
-		JSON.stringify(roEditor),
-	);
-	check(
-		"stamp failure → doc untouched on disk",
-		readFileSync(roPath, "utf8") === VALID_DOC,
+		"failure paths stage nothing (fill-event count unchanged)",
+		p.emitted.filter((e) => e.ch === "tui_filled_handoff").length ===
+			fillEventsBefore,
+		JSON.stringify(p.emitted.map((e) => e.ch)),
 	);
 }
 
-// ── 6. /continue modes ──
-console.log("/continue modes:");
+// ── 6. /continue argument forms: missing doc, generic text, docPath-as-text ──
+console.log("/continue argument forms:");
 {
-	// bare → newest doc in the handoff data dir
-	const agentDocs = scratchDir("pih-docs-");
-	process.env.PI_CODING_AGENT_DIR = agentDocs;
-	writeDoc(
-		agentDocs,
-		"handoff-2026-01-01T00-00-00-000Z.md",
-		"# Handoff\n\n## Next Task\nOlder task.\n",
-	);
-	const newestPath = writeDoc(
-		agentDocs,
-		"handoff-2026-02-02T00-00-00-000Z.md",
-		"# Handoff\n\n## Next Task\nNewer task.\n",
-	);
-
+	// Bare with NO continue toolCall in the branch → clean error, no launch.
 	const p = makeMockPi();
+	const agentNoDoc = scratchDir("pih-nodoc-");
+	process.env.PI_CODING_AGENT_DIR = agentNoDoc;
 	handoffExtension(p.pi);
-	const { state, newSession } = makeSessionCapture();
+	const notes: string[] = [];
+	const cap = makeSessionCapture();
 	await p.commands.get("continue").handler(
 		"",
 		makeMockCtx({
-			ui: { notify: () => {}, setEditorText: () => {} },
-			newSession,
+			sessionBranch: [
+				{ id: "u1", type: "message", message: { role: "user", content: "hello" } },
+			],
+			ui: { notify: (m: string) => notes.push(m), setEditorText: () => {} },
+			newSession: cap.newSession,
 		}),
 	);
 	check(
-		"bare /continue → newest doc drives the live message",
-		state.liveMessages[0] === continuationPrompt(newestPath, "Newer task."),
-		JSON.stringify(state.liveMessages),
+		"bare with no continue toolCall → clean error, no launch",
+		notes.some((m) => m.includes("No handoff document in this session")) &&
+			cap.state.liveMessages.length === 0,
+		JSON.stringify(notes),
 	);
 	check(
-		"bare /continue → hidden origin entry records the newest doc path",
-		state.appended[0]?.details?.docPath === newestPath,
-		JSON.stringify(state.appended),
+		"no-document error emits no lifecycle events",
+		p.emitted.filter(
+			(e) =>
+				e.ch === "handoff_command_start" || e.ch === "handoff_command_complete",
+		).length === 0,
+		JSON.stringify(p.emitted.map((e) => e.ch)),
 	);
 
-	// generic text → as-is, nothing seeded
+	// Generic text → as-is, nothing seeded.
 	const p2 = makeMockPi();
 	handoffExtension(p2.pi);
 	const cap2 = makeSessionCapture();
@@ -1343,9 +1487,7 @@ console.log("/continue modes:");
 	);
 	check(
 		"generic: no LLM-visible message seeded",
-		!cap2.state.appended.some(
-			(m) => m.role === "user" || JSON.stringify(m).includes("Handoff Context"),
-		),
+		!cap2.state.appended.some((m) => m.role === "user"),
 		JSON.stringify(cap2.state.appended),
 	);
 	check(
@@ -1357,86 +1499,80 @@ console.log("/continue modes:");
 		),
 	);
 
-	// no docs anywhere → bare errors cleanly
-	const agentNoDocs = scratchDir("pih-nodocs-");
-	process.env.PI_CODING_AGENT_DIR = agentNoDocs;
+	// Old docPath habit: an argument that looks like a path is just text (D13).
 	const p3 = makeMockPi();
 	handoffExtension(p3.pi);
-	const notes: string[] = [];
+	const cap3 = makeSessionCapture();
+	const pathArg = join(
+		tmpdir(),
+		"data",
+		"pi-handoff",
+		"handoff-2026-01-01T00-00-00-000Z.md",
+	);
 	await p3.commands.get("continue").handler(
-		"",
-		makeMockCtx({
-			ui: { notify: (m: string) => notes.push(m), setEditorText: () => {} },
-		}),
-	);
-	check(
-		"bare with no docs → clean error",
-		notes.some((m) => m.includes("No handoff documents")),
-		JSON.stringify(notes),
-	);
-}
-
-// ── 6b. hand-edited doc (user deleted the header) — D8 manual-edit survival ──
-console.log("hand-edited doc — /continue stays write-free:");
-{
-	process.env.PI_CODING_AGENT_DIR = agentTool;
-	const p = makeMockPi();
-	handoffExtension(p.pi);
-	const editedPath = writeDoc(agentTool, "handoff-edited.md", VALID_DOC);
-	const { state, newSession } = makeSessionCapture();
-	await p.commands.get("continue").handler(
-		editedPath,
+		pathArg,
 		makeMockCtx({
 			ui: { notify: () => {}, setEditorText: () => {} },
-			newSession,
+			newSession: cap3.newSession,
 		}),
 	);
 	check(
-		"header-less (hand-edited) doc → /continue still launches",
-		state.liveMessages.length === 1 && state.sessionInfo[0] === VALID_TITLE,
-		JSON.stringify(state.liveMessages),
+		"docPath argument → sent as generic text, no special-casing",
+		cap3.state.liveMessages[0] === pathArg,
+		JSON.stringify(cap3.state.liveMessages),
 	);
 	check(
-		"live message byte-identical to the contract function (no header leak)",
-		state.liveMessages[0] === continuationPrompt(editedPath, VALID_TASK),
-		JSON.stringify(state.liveMessages),
-	);
-	check(
-		"/continue performs no writes — file untouched (not re-stamped)",
-		readFileSync(editedPath, "utf8") === VALID_DOC,
-	);
-	check(
-		"origin entry still records the doc + profile (machine linkage survives manual edits)",
-		state.appended[0]?.details?.docPath === editedPath &&
-			state.appended[0]?.details?.profile === agentTool,
-		JSON.stringify(state.appended),
+		"docPath argument → generic title, no document in origin entry",
+		cap3.state.appended.every((m) => m.role !== "user") &&
+			cap3.state.appended[0]?.details?.document === undefined &&
+			p3.emitted.some(
+				(e) =>
+					e.ch === "handoff_command_complete" &&
+					e.payload.sessionTitle === deriveSessionTitle(null, pathArg),
+			),
+		JSON.stringify(cap3.state.appended),
 	);
 }
 
-// ── 7. lifecycle pairing (invalid doc via /continue <path>) ──
+// ── 7. lifecycle pairing (bare recovery launch) ──
 console.log("lifecycle pairing:");
 {
 	const p = makeMockPi();
-	process.env.PI_CODING_AGENT_DIR = agentTool;
 	handoffExtension(p.pi);
-	const badCommandPath = writeDoc(
-		agentTool,
-		"handoff-invalid.md",
-		"# no next task section",
+	const branch = [
+		{
+			id: "a1",
+			type: "message",
+			message: {
+				role: "assistant",
+				content: [
+					{
+						type: "toolCall",
+						id: "tc1",
+						name: "continue",
+						arguments: { document: VALID_DOC },
+					},
+				],
+			},
+		},
+	];
+	await p.commands.get("continue").handler(
+		"",
+		makeMockCtx({
+			sessionBranch: branch,
+			ui: { notify: () => {}, setEditorText: () => {} },
+			newSession: makeSessionCapture().newSession,
+		}),
 	);
-	await p.commands
-		.get("continue")
-		.handler(
-			badCommandPath,
-			makeMockCtx({ ui: { notify: () => {}, setEditorText: () => {} } }),
-		);
-	const pairs = p.emitted.filter((e) => e.ch === "handoff_command_complete");
+	const starts = p.emitted.filter((e) => e.ch === "handoff_command_start");
+	const completes = p.emitted.filter((e) => e.ch === "handoff_command_complete");
 	check(
-		"invalid doc → start+complete pair with error",
-		p.emitted[0]?.ch === "handoff_command_start" &&
-			pairs.length === 1 &&
-			!!pairs[0].payload.error,
-		JSON.stringify(p.emitted),
+		"bare recovery → exactly one start+complete pair, success-tagged",
+		starts.length === 1 &&
+			completes.length === 1 &&
+			completes[0].payload.error === undefined &&
+			completes[0].payload.sessionTitle === VALID_TITLE,
+		JSON.stringify(p.emitted.map((e) => ({ ch: e.ch, payload: e.payload }))),
 	);
 }
 
@@ -1696,15 +1832,39 @@ console.log("skipTools pre-serialization filter (D9):");
 		});
 
 	check(
-		"DEFAULT_SKIP_TOOLS = the four documented patterns",
+		"DEFAULT_SKIP_TOOLS = the five documented patterns (incl. continue, D11)",
 		JSON.stringify([...DEFAULT_SKIP_TOOLS]) ===
 			JSON.stringify([
 				"*mempalace_diary_write",
 				"*mempalace_reconnect",
 				"jira_assign_ticket",
 				"jira_update_status",
+				"continue",
 			]),
 		JSON.stringify([...DEFAULT_SKIP_TOOLS]),
+	);
+	check(
+		"document-bearing continue toolCall collapses in serialization",
+		(() => {
+			const continueBranch = [
+				entry("k0", { role: "user", content: "hand off" }),
+				entry("k1", {
+					role: "assistant",
+					content: [
+						{ type: "text", text: "KEEP-STAGED-NARRATION" },
+						toolCall("kc1", "continue", { document: "SECRET-DOC-BODY" }),
+					],
+				}),
+				entry("k2", toolResultMsg("kc1", "continue", "HANDOFF-STAGED")),
+			];
+			const out = buildConversationText(skipCtx(continueBranch, []));
+			return (
+				!out.includes("SECRET-DOC-BODY") &&
+				!out.includes("HANDOFF-STAGED") &&
+				out.includes("[skipped by handoff.skipTools: continue]") &&
+				out.includes("KEEP-STAGED-NARRATION")
+			);
+		})(),
 	);
 
 	// Default matrix — defaults active with NO config present (default ON).
