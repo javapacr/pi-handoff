@@ -3,12 +3,17 @@
  *
  * Registers lifecycle hooks:
  * - session_start notification when a new session was created from a handoff.
- * - tui_filled_handoff → agent_end auto-submit: when the `continue` tool
+ * - tui_filled_handoff → agent_settled auto-submit: when the `continue` tool
  *   stages bare `/continue` in the editor and the process is inside a
  *   supported terminal multiplexer, automatically sends Enter to the pane
- *   after the agent turn ends. This is the warm path's launch beat (no-doc
- *   rehaul, D10) and the surviving captureTerminalContext call site that
- *   keeps the herdr context file alive.
+ *   once the agent run has settled. This is the warm path's launch beat
+ *   (no-doc rehaul, D10) and the surviving captureTerminalContext call site
+ *   that keeps the herdr context file alive.
+ *
+ * Why agent_settled, not agent_end (pi 1.0 extensions.md "Respect the runtime
+ * lifecycle"): agent_end can be followed by automatic retries, compaction, or
+ * queued work; agent_settled fires only once pi will not continue
+ * automatically, so the Enter never lands mid-retry or mid-compaction.
  *
  * Supports both tmux and herdr backends via the terminal strategy.
  */
@@ -27,21 +32,21 @@ import {
 } from "./terminal-strategy";
 
 /**
- * Delay (ms) after agent_end before sending Enter. Gives the TUI time to
+ * Delay (ms) after agent_settled before sending Enter. Gives the TUI time to
  * settle and render the pre-filled editor text.
  */
 const AUTO_SUBMIT_DELAY_MS = 200;
 
 /**
- * Safety timeout (ms) to auto-clear the pending flag if agent_end never fires
- * (e.g. agent crashed, user interrupted). Prevents a stale flag from triggering
- * on an unrelated future agent_end.
+ * Safety timeout (ms) to auto-clear the pending flag if agent_settled never
+ * fires (e.g. agent crashed, user interrupted). Prevents a stale flag from
+ * triggering on an unrelated future agent_settled.
  */
 const PENDING_FLAG_TIMEOUT_MS = 30_000;
 
 /**
  * Terminal context captured at tui_filled_handoff emit time. When non-null,
- * an auto-submit is pending and will fire on the next agent_end.
+ * an auto-submit is pending and will fire on the next agent_settled.
  */
 let pendingAutoSubmit: TerminalContext | null = null;
 
@@ -104,7 +109,7 @@ export function registerHandoffEvents(pi: ExtensionAPI): void {
 
 		pendingAutoSubmit = ctx;
 
-		// Safety: clear the flag after a timeout in case agent_end never fires.
+		// Safety: clear the flag after a timeout in case agent_settled never fires.
 		if (pendingFlagTimer) clearTimeout(pendingFlagTimer);
 		pendingFlagTimer = setTimeout(
 			() => clearPendingAutoSubmit(),
@@ -112,15 +117,15 @@ export function registerHandoffEvents(pi: ExtensionAPI): void {
 		);
 	});
 
-	// ── agent_end: auto-submit Enter if a handoff is pending ────────────────
+	// ── agent_settled: auto-submit Enter if a handoff is pending ────────────
 
-	pi.on("agent_end", () => {
+	pi.on("agent_settled", () => {
 		if (pendingAutoSubmit === null) return;
 
 		const ctx = pendingAutoSubmit;
 		clearPendingAutoSubmit();
 
-		// Small delay for the TUI to settle after the agent turn ends.
+		// Small delay for the TUI to render the pre-filled editor text.
 		setTimeout(() => {
 			sendEnter(ctx);
 		}, AUTO_SUBMIT_DELAY_MS);

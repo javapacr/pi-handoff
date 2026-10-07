@@ -471,9 +471,9 @@ check(
 	);
 }
 check(
-	"api hooks: session_start + agent_end",
+	"api hooks: session_start + agent_settled (auto-submit NOT on agent_end)",
 	JSON.stringify(s.apiOn.map(([e]) => e).sort()) ===
-		JSON.stringify(["agent_end", "session_start"]),
+		JSON.stringify(["agent_settled", "session_start"]),
 	JSON.stringify(s.apiOn.map(([e]) => e)),
 );
 check(
