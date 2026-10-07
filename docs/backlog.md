@@ -8,7 +8,8 @@ One file per item in [backlog/](backlog/). This index is the status board — up
 | [`cacheRetention: "none"` on the detached generation call](backlog/cache-retention-none.md) | DONE 2026-09-13 (`96acd50`) |
 | [Rehaul of handoff generation — agent-driven template + document-file tracking](backlog/handoff-template-rehaul.md) | DONE 2026-09-13 (slice A `e7aadbe`) |
 | [All handoff styles emit the same template; `/continue` seeds the next session with previous-session linkage](backlog/unified-template-continue-linkage.md) | DONE 2026-09-13 (slice B `4e8e06a`) |
-| [Command-path orphan `pendingAutoSubmit` — stray Enter into the new session](backlog/pending-autosubmit-orphan.md) | open — observe for user-visible effect |
+| [Command-path orphan `pendingAutoSubmit` — stray Enter into the new session](backlog/pending-autosubmit-orphan.md) | open — reassessed 2026-10-07: trigger path gone (W2), settle-gated + shutdown-cleared; close after one live warm-path check |
+| [pi 1.0 extension-standards conformance — typebox peer, `agent_settled`, shutdown cleanup, tool exposure/annotations, dev pins](design/2026-10-07-pi-1.0-conformance.md) | DONE 2026-10-07 (branch `chore/pi-1.0-conformance`, merge-ready) |
 | [Fast-path detached generation — tiered payload pipeline](backlog/fast-path-payload-pipeline.md) | open — idea |
 | [Skip-list for tool calls in session-JSONL parsing (mempalace, Jira writes)](backlog/skip-tool-calls-serialization.md) | DONE 2026-09-13 (slice C `91585a0`) |
 | [`handoff.effort` unmapped on anthropic-direct after the registry migration](backlog/effort-anthropic-direct.md) | open — documented limitation, zero current impact |
