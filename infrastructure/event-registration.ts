@@ -130,4 +130,14 @@ export function registerHandoffEvents(pi: ExtensionAPI): void {
 			sendEnter(ctx);
 		}, AUTO_SUBMIT_DELAY_MS);
 	});
+
+	// ── session_shutdown: release pending auto-submit state ────────
+	// pi 1.0 extensions.md ("Errors and cleanup"): release resources in
+	// session_shutdown and keep cleanup idempotent; quit, reload, and session
+	// replacement can converge here. clearPendingAutoSubmit() is a no-op when
+	// nothing is pending, so running it twice is safe.
+
+	pi.on("session_shutdown", () => {
+		clearPendingAutoSubmit();
+	});
 }

@@ -471,11 +471,28 @@ check(
 	);
 }
 check(
-	"api hooks: session_start + agent_settled (auto-submit NOT on agent_end)",
+	"api hooks: session_start + agent_settled (auto-submit NOT on agent_end) + session_shutdown",
 	JSON.stringify(s.apiOn.map(([e]) => e).sort()) ===
-		JSON.stringify(["agent_settled", "session_start"]),
+		JSON.stringify(["agent_settled", "session_shutdown", "session_start"]),
 	JSON.stringify(s.apiOn.map(([e]) => e)),
 );
+{
+	// Idempotent cleanup: quit/reload/session replacement can converge on
+	// session_shutdown, so the handler must tolerate repeated calls.
+	const onShutdown = s.apiOn.find(([e]) => e === "session_shutdown")?.[1];
+	let threw: unknown = null;
+	try {
+		onShutdown?.({ type: "session_shutdown", reason: "reload" }, {});
+		onShutdown?.({ type: "session_shutdown", reason: "quit" }, {});
+	} catch (e) {
+		threw = e;
+	}
+	check(
+		"session_shutdown cleanup is idempotent (two calls, no throw)",
+		typeof onShutdown === "function" && threw === null,
+		String(threw),
+	);
+}
 check(
 	"bus listeners: tui_filled_handoff ONLY (dead tui_handoff_completed listener deleted)",
 	JSON.stringify(s.eventsOn.map(([c]) => c)) ===
