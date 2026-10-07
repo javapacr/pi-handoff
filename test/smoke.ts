@@ -447,6 +447,29 @@ check(
 		JSON.stringify(["command:handoff", "command:continue", "tool:continue"]),
 	String(s.registrations),
 );
+{
+	// pi 1.0 packages.md "Declare dependencies": host-provided packages are
+	// peerDependencies "*", never dependencies (pi warns at load otherwise).
+	const manifest = JSON.parse(
+		readFileSync(join(repoRoot, "package.json"), "utf-8"),
+	);
+	const hostProvided = [
+		"@earendil-works/pi-agent-core",
+		"@earendil-works/pi-ai",
+		"@earendil-works/pi-coding-agent",
+		"@earendil-works/pi-tui",
+		"typebox",
+	];
+	check(
+		"manifest: host-provided packages are peerDependencies '*', none in dependencies",
+		hostProvided.every((n) => manifest.peerDependencies?.[n] === "*") &&
+			!hostProvided.some((n) => n in (manifest.dependencies ?? {})),
+		JSON.stringify({
+			dependencies: manifest.dependencies,
+			peerDependencies: manifest.peerDependencies,
+		}),
+	);
+}
 check(
 	"api hooks: session_start + agent_end",
 	JSON.stringify(s.apiOn.map(([e]) => e).sort()) ===
