@@ -61,6 +61,19 @@ export function registerContinueTool(pi: ExtensionAPI): void {
 			"session. On failure it reports what to repair — fix the document " +
 			"text and call it again with the corrected full document. After a " +
 			"success, stop: no further tool calls, one short line at most.",
+		// pi 1.0 "Tool exposure": model-only = declared to the model while
+		// active, never callable via ctx.executeTool (it stages a launch for the
+		// user; meaningless from a codemode script). Registering a model-only
+		// tool still activates it.
+		exposure: "model-only",
+		// MCP-style hints: writes nothing to disk, only stages editor text and
+		// emits a bus event; repeated calls re-stage the same /continue.
+		annotations: {
+			readOnlyHint: false,
+			destructiveHint: false,
+			idempotentHint: true,
+			openWorldHint: false,
+		},
 		promptSnippet: "Stage /continue — queues the new-session launch",
 		promptGuidelines: [
 			"Call continue with the complete filled handoff template as the document argument (full text inline, no file).",

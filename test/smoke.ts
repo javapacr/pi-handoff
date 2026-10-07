@@ -441,6 +441,25 @@ check(
 	!s.tools.has("request_handoff"),
 );
 check("type=in-session → continue tool registered", s.tools.has("continue"));
+{
+	const def = s.tools.get("continue");
+	check(
+		"continue tool: exposure model-only (declared to model, not ctx.executeTool-callable)",
+		def?.exposure === "model-only" && def?.defaultActive === undefined,
+		JSON.stringify({ exposure: def?.exposure, defaultActive: def?.defaultActive }),
+	);
+	check(
+		"continue tool: annotations readOnly=false destructive=false idempotent=true openWorld=false",
+		JSON.stringify(def?.annotations) ===
+			JSON.stringify({
+				readOnlyHint: false,
+				destructiveHint: false,
+				idempotentHint: true,
+				openWorldHint: false,
+			}),
+		JSON.stringify(def?.annotations),
+	);
+}
 check(
 	"all three surfaces register in the documented order",
 	JSON.stringify(s.registrations) ===
