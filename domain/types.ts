@@ -151,12 +151,6 @@ export interface HandoffSettings {
 	terminal?: TerminalMode;
 
 	/**
-	 * Whether /handoff nudges the agent to write a MemPalace diary entry
-	 * before the handoff proceeds. Defaults to true when absent.
-	 */
-	diaryReminder?: boolean;
-
-	/**
 	 * Glob patterns for the handoff conversation's tool-traffic filter
 	 * (infrastructure/tool-skip.ts). `*` matches zero or more characters and
 	 * is the only metacharacter; matching is case-sensitive. Patterns apply
@@ -240,10 +234,10 @@ export interface HerdrPaneContext {
 // ── Lifecycle event payloads ──────────────────────────────────────────────
 
 /**
- * Payload for `handoff_tool_start` / `handoff_tool_end` lifecycle events.
+ * Payload for the `handoff_tool_start` lifecycle event.
  */
 export interface HandoffToolEventPayload {
-	/** The goal passed to the `request_handoff` tool. */
+	/** The session title derived from the document's `## Next Task`. */
 	goal: string;
 	/** The suggested command that was pre-filled. */
 	command: string;
@@ -252,17 +246,48 @@ export interface HandoffToolEventPayload {
 }
 
 /**
- * Payload for `handoff_command_start` / `handoff_command_complete` events.
+ * Which command emitted a `handoff_command_*` event: the `/handoff` command
+ * or the `/continue` command.
  */
-export interface HandoffCommandEventPayload {
+export type HandoffTrigger = "handoff" | "continue";
+
+/**
+ * Fields shared by every `handoff_command_start` / `handoff_command_complete`
+ * payload.
+ */
+export interface HandoffCommandPayloadBase {
 	/** The goal for the handoff (null when inferred). */
 	goal: string | null;
-	/** Whether the quick launch form was used (no editor review). */
+	/** Legacy: mirrors `trigger === "continue"` (true on /continue, false on /handoff); read `trigger` instead. */
 	quickMode: boolean;
+	/** Which command emitted the event. */
+	trigger: HandoffTrigger;
 	/** Epoch ms timestamp. */
 	timestamp: number;
+}
+
+/**
+ * Payload for `handoff_command_start`.
+ */
+export interface HandoffCommandStartPayload extends HandoffCommandPayloadBase {
+	/** Only on `/handoff` start; call synchronously before your first await. */
+	waitUntil?: (promise: Promise<unknown>) => void;
+}
+
+/**
+ * Payload for `handoff_command_complete`.
+ */
+export interface HandoffCommandCompletePayload
+	extends HandoffCommandPayloadBase {
 	/** Only on complete: the session title assigned. */
 	sessionTitle?: string;
 	/** Only on complete: error message if the handoff failed. */
 	error?: string;
 }
+
+/**
+ * Payload for `handoff_command_start` / `handoff_command_complete` events.
+ */
+export type HandoffCommandEventPayload =
+	| HandoffCommandStartPayload
+	| HandoffCommandCompletePayload;

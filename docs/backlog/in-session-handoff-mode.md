@@ -98,9 +98,8 @@ per mode.
   block mirrors `HANDOFF_OUTPUT_TEMPLATE` — keep in sync.
 - No compaction suggestion on this path (unlike detached): compacting first
   would replace the warm full-history prefix that makes the mode cheap.
-- Diary reminder is folded into the injected instruction (one turn) instead
-  of a separate pre-flight turn; still gated by `handoff.diaryReminder` and
-  `mempalace_diary_write` tool presence.
+- No pre-handoff nudge of its own: listeners on the lifecycle events own
+  any memory step (2026-10).
 
 - **Doc reference instead of pre-load** (2026-09-02, user): the new session
   is seeded with the document PATH + a read-first instruction, not the doc
@@ -124,8 +123,7 @@ per mode.
 - If the in-session generation fails (agent never calls `handoff_launch`),
   no `handoff_command_complete` fires — failure is only visible as the turn
   ending without a prefill. `handoff_launch` also emits no
-  `handoff_tool_start/end` (those channels are documented as
-  `request_handoff`-specific).
+  `handoff_tool_start` (only the `continue` tool emits it).
 - Parser divergence on degenerate docs: `findNextTaskSection` is
   heading-anchored, `splitHandoffPrompt` splits on the `"\n## Next Task"`
   substring — docs with the heading as the very first line, or a

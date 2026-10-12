@@ -7,12 +7,11 @@ Context handoff for the [pi coding agent](https://github.com/earendil-works/pi) 
 | Feature | Description |
 | ------- | ----------- |
 | `/handoff` command | Cold-session path, registered in every session. Snapshots the session, generates the handoff in a one-off LLM call on `handoff.provider`/`model`/`effort`, then **directly launches the new session** seeded with the filled template — no document file is created anywhere (no-doc rehaul, 2026-09-13). |
-| Streaming progress loader | One continuous loader spans the whole flow with live phase lines: `Gathering context…` → `Memory pre-flight: agent persisting session learnings… (Xs)` (elapsed ticks per second) → `Snapshotting context (N messages, X chars)…` → generation. Escape still cancels. |
+| Streaming progress loader | One continuous loader spans the whole flow with live phase lines: `Gathering context…` → `Waiting for pre-handoff hooks… (Xs)` (only when a listener registered a hook) → `Snapshotting context (N messages, X chars)…` → generation. Escape still cancels. |
 | Model display & generation status | Shows which model generates the prompt — `Generating with provider/model (effort: …)` — plus a `fallback: …` line naming the model actually used when the configured one is unavailable, and a coarse `generating…` transition once the response lands (generation runs through pi's model runtime, which exposes no per-token stream). After saving, the notify reports `generated with <model-id> in Xs`. |
-| Diary reminder | Before the handoff prompt is generated, nudges the agent (one injected suggestion) to persist durable session learnings to MemPalace via `mempalace_diary_write`. The agent skips on its own if it already wrote a diary entry this session or nothing is worth recording. Requires the `mempalace_diary_write` tool to be active; disable with `handoff.diaryReminder: false`. |
 | Terminal multiplexer support | Auto-submits the handoff via **tmux** or **herdr** based on config — no manual Enter needed. |
 | Herdr shared memory | When using herdr, stores pane/workspace/tab context to `$AGENT_DIR/.herdr-handoff-context.json` so other extensions can locate this session. |
-| Lifecycle events | Emits `handoff_command_start/complete` events on the event bus for other extensions to react to. |
+| Lifecycle events | Emits `handoff_command_start`, `handoff_command_complete` and `handoff_tool_start` on the event bus; `/handoff` waits (capped at 120s) on promises listeners register via `waitUntil` — see [Lifecycle events](#lifecycle-events). |
 | Failure fallback | If the handoff cannot launch (invalid `## Next Task`, session creation cancelled), the generated handoff text is copied to the clipboard and printed to stderr so nothing paid-for is lost. |
 | Anchor repo support | When the workspace isn't a git repo itself but contains sub-directory git repos, gathers git state from each sub-repo individually. |
 | No-doc handoff flow | Neither path writes a document file — the filled template is injected directly as the new session's first message (provenance line + template + canonical Phase Adherence). The warm path's `continue` toolCall itself is the durable stash; the cold path launches straight from the executor. If a launch fails, the generated text is rescued to clipboard + stderr. |
@@ -40,8 +39,7 @@ index.ts                          Entry point — unified registration of all th
 │   ├── context-gatherer.ts       Collects git state, session history, tasks
 │   ├── prompt-generator.ts       Builds system/user prompts, resolves model
 │   ├── handoff-executor.ts       Orchestrates the /handoff cold-session flow
-│   ├── session-creator.ts        New-session creation (owned by the /continue command)
-│   └── diary-reminder.ts         MemPalace diary pre-flight
+│   └── session-creator.ts        New-session creation (owned by the /continue command)
 ├── domain/
 │   ├── types.ts                  Core types (HandoffSettings, GitContext, etc.)
 │   ├── handoff-prompt.ts         Continuation prompt composer, Next Task validation
@@ -114,7 +112,7 @@ While the handoff runs, a single loader shows each phase as it happens — no mo
 
 ```text
 Gathering context…
-Memory pre-flight: agent persisting session learnings… (12s)   ← ticks every second
+Waiting for pre-handoff hooks… (3s)          ← only when a listener registered a hook; ticks every second
 Snapshotting context (42 messages, 18.4k chars)…
 Generating handoff prompt · context: 18.4k
 Generating with deepseek/deepseek-v4-flash (effort: low)
@@ -122,10 +120,6 @@ Generating with deepseek/deepseek-v4-flash · generating…
 ```
 
 The generation model (and effort level) is always shown before generation starts; if the configured handoff model is unavailable, a `fallback: <model-id>` line names the model actually used. Press Escape at any point to cancel (`prompt: null`, no session created).
-
-### Diary reminder
-
-When `/handoff` runs, the agent is nudged (once, before the handoff prompt is generated) to persist durable session learnings to MemPalace. It skips the diary on its own if it already wrote one this session or nothing durable is worth recording, keeping any reply to a single line. The nudge only fires when the `mempalace_diary_write` tool is active in the session — sessions without the memory system pay no extra turns — and can be disabled with `handoff.diaryReminder: false` in settings.
 
 ## Configuration
 
@@ -150,7 +144,6 @@ Add an optional `handoff` block to your pi profile's `settings.json` (under `$AG
 | `effort` | `string` | — | Thinking level for `/handoff` generation (`"low"`, `"medium"`, `"high"`). Maps natively on Bedrock and OpenAI-compatible providers (zai/deepseek/openai); **unmapped on direct-Anthropic models** — see [docs/backlog/effort-anthropic-direct.md](docs/backlog/effort-anthropic-direct.md). |
 | `skipTools` | `string[]` | mempalace diary + reconnect, Jira assign/update | Glob patterns (`*` = zero-or-more chars) for tool calls to **stub out** of the serialized conversation before generation — post-hoc re-encodings and mutation receipts, not context. Matched against tool-call and tool-result names; a user list **replaces** the defaults; `[]` disables; malformed values are ignored with a warning. Note: repo discovery reads the filtered text, so patterns matching path-carrying tools narrow git-repo discovery accordingly. |
 | `terminal` | `"tmux"` \| `"herdr"` | auto-detect | Which terminal multiplexer to use for auto-submit. When omitted, auto-detects from environment. |
-| `diaryReminder` | `boolean` | `true` | When enabled, `/handoff` nudges the agent to write a MemPalace diary entry (`mempalace_diary_write`) before the handoff prompt is generated. Skipped automatically when the tool is not active. |
 
 All `handoff` settings are read once at extension startup — changing any of them requires a session restart.
 
@@ -182,16 +175,25 @@ Notes:
 
 ### Lifecycle events
 
-The extension emits events on the pi event bus. Other extensions can listen:
+The extension emits three events on the pi event bus. Other extensions can listen:
 
 | Channel | When | Payload |
 | ------- | ---- | ------- |
-| `handoff_command_start` | `/handoff` command began | `{ goal, quickMode, timestamp }` |
-| `handoff_command_complete` | `/handoff` command finished | `{ goal, quickMode, sessionTitle?, artifactPath?, error?, timestamp }` |
+| `handoff_command_start` | `/handoff` passed its has-conversation gate (before the loader) or bare `/continue` recovered a document | `{ goal, quickMode, trigger, waitUntil?, timestamp }` |
+| `handoff_command_complete` | Either command finished with success, cancel or error | `{ goal, quickMode, trigger, sessionTitle?, error?, timestamp }` |
+| `handoff_tool_start` | The `continue` tool staged `/continue`, emitted right after `tui_filled_handoff` | `{ goal: <session title>, command: "/continue", timestamp }` |
+
+Every command payload carries `trigger`: `"handoff"` or `"continue"`. `quickMode` is legacy and mirrors `trigger === "continue"`; use `trigger`. `/continue <text>` emits `handoff_command_complete` without a `start`, and a failed has-conversation gate emits neither event.
+
+`waitUntil` is optional: feature-detect it (`typeof payload.waitUntil === "function"`). It is absent on bare `/continue` and on older pi-handoff installs. To have `/handoff` wait for your work, call `waitUntil(promise)` synchronously in the handler, before the first `await` — registration closes when `emit` returns, and later calls are ignored. Resolve your promise when your own work is done, not on the first `agent_settled`.
+
+`/handoff` awaits every registered promise (`Promise.allSettled`) before the snapshot, capped at 120s. Rejections are ignored, and Esc cancels during the wait. At the cap the handoff proceeds, and launching the new session aborts any agent turn a listener started, so slow work is lost: keep hooks short. On Esc the listener's work continues in the current session.
+
+The payload carries a function, so it is not serializable: listeners run in-process only. `tui_filled_handoff` is pi-handoff-internal; listeners use `handoff_tool_start`. Example: pi-mempalace registers a `waitUntil` that writes its diary entry before the handoff snapshot is taken.
 
 ## Testing
 
-`npm test` runs a behavioral smoke suite (182 checks). It stages the repo's TypeScript tree into a temp ESM context, stubs the `@earendil-works/*` runtime packages through node module hooks (repo devDep versions drift from pi's runtime aliases), loads the staged extension, and asserts: identical registration across settings shapes, the `/handoff` executor directly launching the successor (no save, no editor, no staging) with rescue-to-clipboard on every failure mode, registry-routed generation with `cacheRetention: "none"` and intact auth-by-construction, the continue tool's inline-document validate/repair loop + bare-`/continue` staging, branch-based bare-`/continue` recovery (newest-wins, restart-safe), the single-message continuation prompt (provenance + document + canonical Phase Adherence exactly once), lifecycle event pairing + the `↩ Continued` origin-entry notify, template/skill byte-sync, document-file extraction (git `--untracked-files=all` + tool-log union), the `handoff.skipTools` filter (matcher, defaults incl. `continue`, override/disable/malformed, clone-before-mutate), and the **zero-filesystem-writes invariant** across both flows (agent dir + repo + tmpdir snapshots).
+`npm test` runs a behavioral smoke suite (210 checks). It stages the repo's TypeScript tree into a temp ESM context, stubs the `@earendil-works/*` runtime packages through node module hooks (repo devDep versions drift from pi's runtime aliases), loads the staged extension, and asserts: identical registration across settings shapes, the `/handoff` executor directly launching the successor (no save, no editor, no staging) with rescue-to-clipboard on every failure mode, registry-routed generation with `cacheRetention: "none"` and intact auth-by-construction, the continue tool's inline-document validate/repair loop + bare-`/continue` staging, branch-based bare-`/continue` recovery (newest-wins, restart-safe), the single-message continuation prompt (provenance + document + canonical Phase Adherence exactly once), lifecycle event pairing + the `↩ Continued` origin-entry notify, template/skill byte-sync, document-file extraction (git `--untracked-files=all` + tool-log union), the `handoff.skipTools` filter (matcher, defaults incl. `continue`, override/disable/malformed, clone-before-mutate), and the **zero-filesystem-writes invariant** across both flows (agent dir + repo + tmpdir snapshots).
 
 ## License
 

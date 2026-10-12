@@ -30,6 +30,7 @@ import {
 } from "../domain/handoff-prompt";
 import { buildProvenanceLine } from "../domain/provenance";
 import { resolveTerminalMode } from "../infrastructure/terminal-strategy";
+import { emitToolStart } from "../infrastructure/event-channels";
 
 export interface ContinueDetails {
 	sessionTitle?: string;
@@ -145,6 +146,10 @@ export function registerContinueTool(pi: ExtensionAPI): void {
 				goal: sessionTitle,
 				command,
 			} satisfies TuiFilledHandoffPayload);
+
+			// Announce the staged handoff so listeners can queue pre-launch work
+			// (the run settles only after that work's turn).
+			emitToolStart(pi, { goal: sessionTitle, command });
 
 			const mode = resolveTerminalMode();
 			const autoSubmitLabel =

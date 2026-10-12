@@ -224,8 +224,6 @@ function makeMockPi() {
 		},
 		sendUserMessage: (_content: string, _opts: any) => {},
 		setLabel: () => {},
-		getActiveTools: () => ["mempalace_diary_write"],
-		getAllTools: () => [{ name: "mempalace_diary_write" }],
 	};
 	return {
 		pi,
@@ -527,6 +525,11 @@ check(
 		!Object.values(HANDOFF_CHANNELS).includes("tui_handoff_completed"),
 		JSON.stringify(HANDOFF_CHANNELS),
 	);
+	check(
+		"handoff_tool_end channel removed from the bus map",
+		!Object.values(HANDOFF_CHANNELS).includes("handoff_tool_end"),
+		JSON.stringify(HANDOFF_CHANNELS),
+	);
 }
 
 const agentDetachedTyped = scratchDir("pih-detached-", {
@@ -602,6 +605,12 @@ interface ExecutorRun {
 	/** agent-dir + cwd + tmpdir unchanged across the run (first-class invariant). */
 	zeroWrites: boolean;
 	zeroWritesDetail: string;
+	/** Every loader message this run pushed (phase lines, initial label first). */
+	phaseLines: string[];
+	/** Cap timers recorded by the setTimeout spy: fired = delay elapsed, cleared = cancelled. */
+	capTimers: Array<{ fired: boolean; cleared: boolean }>;
+	/** unhandledRejection events counted while the run was in flight. */
+	unhandledRejections: number;
 }
 
 /** Mock `ModelRegistry` capture for the executor's generation path. */
@@ -662,6 +671,13 @@ function makeRegistryCapture(doc: string): RegistryCapture {
 	return capture;
 }
 
+/**
+ * Accumulator across ALL runExecutor runs: every handoff_command_* emission
+ * (start + complete), used by the cross-run trigger checks at the end of the
+ * executor blocks.
+ */
+const handoffCommandEmits: Array<{ ch: string; payload: any }> = [];
+
 /** Drive executeHandoff end-to-end with a canned generated document. */
 async function runExecutor(
 	doc: string,
@@ -672,6 +688,12 @@ async function runExecutor(
 		branch?: unknown[];
 		/** Behavior of the mocked ctx.newSession (default: replace + succeed). */
 		newSessionBehavior?: "ok" | "cancelled" | "throw";
+		/** Test seam: overrides the executor's 120s hook-wait cap for this run. */
+		hookWaitCapMs?: number;
+		/** Called synchronously on the handoff_command_start emit (fixture hook). */
+		onCommandStart?: (payload: any, order: string[]) => void;
+		/** Simulate Esc on the loader right after it mounts. */
+		escapeDuringWait?: boolean;
 	} = {},
 ): Promise<ExecutorRun> {
 	const p = makeMockPi();
@@ -699,6 +721,7 @@ async function runExecutor(
 			);
 		order.push(`emit:${ch}`);
 		p.emitted.push({ ch, payload });
+		if (ch === "handoff_command_start") opts.onCommandStart?.(payload, order);
 	};
 	const wiredNewSession = async (o: any) => {
 		newSessionCalls++;
@@ -723,6 +746,7 @@ async function runExecutor(
 	};
 	const clipBefore = clipboardCalls.length;
 
+	let loaderComp: any;
 	const ctx = makeMockCtx({
 		cwd: execCwd,
 		modelRegistry: capture.registry,
@@ -744,28 +768,94 @@ async function runExecutor(
 			},
 			custom: async (factory: any) =>
 				new Promise((resolve) => {
-					factory(
+					const comp = factory(
 						{ requestRender: () => {} },
 						{ fg: (_key: string, s: string) => s },
 						{},
 						(result: any) => resolve(result),
 					);
+					loaderComp = comp;
+					if (opts.escapeDuringWait) {
+						setImmediate(() => comp.handleInput("\x1b"));
+					}
 				}),
 		},
 	});
+
+	// Snapshot marker: the gather is the first getBranch AFTER the start emit.
+	const innerGetBranch = ctx.sessionManager.getBranch;
+	ctx.sessionManager.getBranch = () => {
+		order.push("getBranch");
+		return innerGetBranch();
+	};
+
+	// Cap-timer spy: records ONLY setTimeout calls whose delay equals this
+	// run's hook-wait cap (default 120_000) so the checks can prove "no timer
+	// left pending" / "no wait at all". Restored in finally (process-global).
+	const capMs = opts.hookWaitCapMs ?? 120_000;
+	const capTimers: Array<{
+		fired: boolean;
+		cleared: boolean;
+		handle: unknown;
+	}> = [];
+	const realSetTimeout = globalThis.setTimeout;
+	const realClearTimeout = globalThis.clearTimeout;
+	(globalThis as any).setTimeout = (cb: any, ms?: number, ...rest: any[]) => {
+		if (ms === capMs) {
+			const rec = {
+				fired: false,
+				cleared: false,
+				handle: undefined as unknown,
+			};
+			rec.handle = (realSetTimeout as any)(
+				() => {
+					rec.fired = true;
+					cb();
+				},
+				ms,
+				...rest,
+			);
+			capTimers.push(rec);
+			return rec.handle;
+		}
+		return (realSetTimeout as any)(cb, ms, ...rest);
+	};
+	(globalThis as any).clearTimeout = (handle: any, ...rest: any[]) => {
+		const rec = capTimers.find((t) => t.handle === handle && !t.fired);
+		if (rec) rec.cleared = true;
+		return (realClearTimeout as any)(handle, ...rest);
+	};
+	let unhandledRejections = 0;
+	const onUnhandledRejection = () => {
+		unhandledRejections++;
+	};
+	process.on("unhandledRejection", onUnhandledRejection);
 
 	try {
 		await executeHandoff(
 			p.pi,
 			ctx,
 			{ rawArgs: "" },
-			{ diaryReminder: false, terminal: "tmux", ...opts.settings },
+			{ terminal: "tmux", ...opts.settings },
+			{ hookWaitCapMs: opts.hookWaitCapMs },
 		);
+		// Let queued microtasks/immediates (hook fixtures) surface while the
+		// rejection counter is still attached.
+		await new Promise((r) => setImmediate(r));
 	} finally {
 		(process.stderr as any).write = realStderrWrite;
+		(globalThis as any).setTimeout = realSetTimeout;
+		(globalThis as any).clearTimeout = realClearTimeout;
+		process.off("unhandledRejection", onUnhandledRejection);
 	}
 
 	const after = zeroWritesSnapshot(agentExec, execCwd);
+
+	for (const e of p.emitted) {
+		if (e.ch === "handoff_command_start" || e.ch === "handoff_command_complete") {
+			handoffCommandEmits.push(e);
+		}
+	}
 
 	return {
 		pi: p,
@@ -782,6 +872,9 @@ async function runExecutor(
 		clipboard: clipboardCalls.slice(clipBefore),
 		zeroWrites: JSON.stringify(before) === JSON.stringify(after),
 		zeroWritesDetail: snapshotDiff(before, after),
+		phaseLines: (loaderComp?.loader?.messages as string[] | undefined) ?? [],
+		capTimers,
+		unhandledRejections,
 	};
 }
 
@@ -893,6 +986,31 @@ check(
 		run.pi.emitted.filter((e) => e.ch === "handoff_command_complete").length ===
 			1,
 	JSON.stringify(run.pi.emitted.map((e) => e.ch)),
+);
+const startRun = run.pi.emitted.find((e) => e.ch === "handoff_command_start");
+check(
+	"trigger: /handoff start payload — trigger 'handoff', function waitUntil",
+	startRun?.payload.trigger === "handoff" &&
+		typeof startRun?.payload.waitUntil === "function",
+	JSON.stringify({
+		...startRun?.payload,
+		waitUntil: typeof startRun?.payload.waitUntil,
+	}),
+);
+check(
+	"hook-wait (a) no listener → no cap timer created",
+	run.capTimers.length === 0,
+	JSON.stringify(run.capTimers),
+);
+check(
+	"hook-wait (a) no listener → no wait phase line",
+	!run.phaseLines.some((l) => l.startsWith("Waiting for pre-handoff hooks")),
+	JSON.stringify(run.phaseLines),
+);
+check(
+	"hook-wait (a) no listener → generation ran and the session launched",
+	run.registry.calls.length === 1 && run.newSessionCalls === 1,
+	JSON.stringify({ generation: run.registry.calls.length, launches: run.newSessionCalls }),
 );
 
 console.log("executor generation routing (registry-owned):");
@@ -1197,6 +1315,245 @@ console.log("executor payload document-files section:");
 		"payload document rows carry path + provenance marker",
 		docsPayload.includes(`- ${join(execCwd, "notes", "plan.md")} — in-session`),
 		JSON.stringify(docsPayload.slice(-500)),
+	);
+}
+
+console.log("executor pre-handoff hook wait:");
+{
+	// (b) a registered pending promise delays the snapshot until it resolves.
+	const runB = await runExecutor(VALID_DOC, {
+		hookWaitCapMs: 5_000,
+		onCommandStart: (payload, order) => {
+			payload.waitUntil(
+				new Promise((r) =>
+					setTimeout(() => {
+						order.push("hook-resolved");
+						r(undefined);
+					}, 30),
+				),
+			);
+		},
+	});
+	const emitIdxB = runB.order.indexOf("emit:handoff_command_start");
+	const firstGetBranchAfterEmit = runB.order.indexOf("getBranch", emitIdxB);
+	check(
+		"hook-wait (b) snapshot (getBranch) waits for the registered hook",
+		runB.order.indexOf("hook-resolved") !== -1 &&
+			firstGetBranchAfterEmit !== -1 &&
+			runB.order.indexOf("hook-resolved") < firstGetBranchAfterEmit,
+		JSON.stringify(runB.order),
+	);
+	check(
+		"hook-wait (b) timed generic phase line, no memory/diary wording",
+		runB.phaseLines.some((l) =>
+			/^Waiting for pre-handoff hooks… \(\d+s\)$/.test(l),
+		) && !runB.phaseLines.some((l) => /memory|diary|mempalace/i.test(l)),
+		JSON.stringify(runB.phaseLines),
+	);
+	check(
+		"hook-wait (b) cap timer cleared once the hook settles",
+		runB.capTimers.length === 1 &&
+			runB.capTimers[0].cleared &&
+			!runB.capTimers[0].fired,
+		JSON.stringify(runB.capTimers),
+	);
+	check(
+		"hook-wait (b) handoff launches after the wait",
+		runB.newSessionCalls === 1 &&
+			runB.pi.emitted.some(
+				(e) =>
+					e.ch === "handoff_command_complete" &&
+					e.payload.error === undefined &&
+					e.payload.sessionTitle !== undefined,
+			),
+		JSON.stringify({
+			launches: runB.newSessionCalls,
+			emits: runB.pi.emitted.map((e) => e.ch),
+		}),
+	);
+
+	// (c) a promise that never resolves is cut off at the cap with an info
+	// notify and the handoff proceeds.
+	const runC = await runExecutor(VALID_DOC, {
+		hookWaitCapMs: 25,
+		onCommandStart: (payload) => {
+			payload.waitUntil(new Promise(() => {}));
+		},
+	});
+	check(
+		"hook-wait (c) hung hook cut off at the cap → info notify, handoff launches",
+		runC.notes.some(
+			(n) =>
+				n.level === "info" &&
+				n.message.startsWith("Pre-handoff hooks did not finish in time"),
+		) && runC.newSessionCalls === 1,
+		JSON.stringify({ notes: runC.notes, launches: runC.newSessionCalls }),
+	);
+	check(
+		"hook-wait (c) cap timer fired (nothing left pending)",
+		runC.capTimers.length === 1 && runC.capTimers[0].fired,
+		JSON.stringify(runC.capTimers),
+	);
+
+	// (d) a rejected promise does not break the handoff.
+	const runD = await runExecutor(VALID_DOC, {
+		hookWaitCapMs: 5_000,
+		onCommandStart: (payload) => {
+			payload.waitUntil(Promise.reject(new Error("hook boom (smoke)")));
+		},
+	});
+	check(
+		"hook-wait (d) rejected hook → handoff launches, no warning/error notify",
+		runD.newSessionCalls === 1 &&
+			!runD.notes.some((n) => n.level === "warning" || n.level === "error"),
+		JSON.stringify({ notes: runD.notes, launches: runD.newSessionCalls }),
+	);
+	check(
+		"hook-wait (d) no unhandled rejection; cap timer cleared",
+		runD.unhandledRejections === 0 &&
+			runD.capTimers.length === 1 &&
+			runD.capTimers[0].cleared &&
+			!runD.capTimers[0].fired,
+		JSON.stringify({
+			unhandledRejections: runD.unhandledRejections,
+			capTimers: runD.capTimers,
+		}),
+	);
+
+	// (e) a loader abort during the wait cancels the handoff.
+	const runE = await runExecutor(VALID_DOC, {
+		hookWaitCapMs: 5_000,
+		escapeDuringWait: true,
+		onCommandStart: (payload) => {
+			payload.waitUntil(new Promise(() => {}));
+		},
+	});
+	check(
+		"hook-wait (e) Esc during the wait → 'Cancelled' complete, no session",
+		runE.pi.emitted.some(
+			(e) =>
+				e.ch === "handoff_command_complete" &&
+				e.payload.error === "Cancelled",
+		) && runE.newSessionCalls === 0,
+		JSON.stringify({
+			emits: runE.pi.emitted.map((e) => ({ ch: e.ch, error: e.payload.error })),
+			launches: runE.newSessionCalls,
+		}),
+	);
+	check(
+		"hook-wait (e) Esc clears the cap timer before it fires",
+		runE.capTimers.length === 1 &&
+			runE.capTimers[0].cleared &&
+			!runE.capTimers[0].fired,
+		JSON.stringify(runE.capTimers),
+	);
+	const emitIdxE = runE.order.indexOf("emit:handoff_command_start");
+	check(
+		"hook-wait (e) no context gathering or generation after Esc",
+		runE.registry.calls.length === 0 &&
+			runE.order.indexOf("getBranch", emitIdxE) === -1,
+		JSON.stringify(runE.order),
+	);
+
+	// Late registration: waitUntil called after emit returned is ignored.
+	{
+		let lateThrew = false;
+		const runLate = await runExecutor(VALID_DOC, {
+			hookWaitCapMs: 5_000,
+			onCommandStart: (payload) => {
+				const late = payload.waitUntil;
+				queueMicrotask(() => {
+					try {
+						late(undefined);
+					} catch {
+						lateThrew = true;
+					}
+				});
+			},
+		});
+		check(
+			"hook-wait late waitUntil → ignored without throwing, no wait, handoff launches",
+			!lateThrew &&
+				runLate.capTimers.length === 0 &&
+				runLate.newSessionCalls === 1,
+			JSON.stringify({
+				lateThrew,
+				capTimers: runLate.capTimers,
+				launches: runLate.newSessionCalls,
+			}),
+		);
+	}
+
+	// Gate: nothing to hand off → neither start nor complete.
+	{
+		const runGate = await runExecutor(VALID_DOC, { branch: [] });
+		check(
+			"gate: no conversation → error notify, neither start nor complete",
+			runGate.notes.some(
+				(n) =>
+					n.level === "error" &&
+					n.message === "No conversation to hand off",
+			) &&
+				runGate.pi.emitted.filter(
+					(e) =>
+						e.ch === "handoff_command_start" ||
+						e.ch === "handoff_command_complete",
+				).length === 0,
+			JSON.stringify({ notes: runGate.notes, emits: runGate.pi.emitted.map((e) => e.ch) }),
+		);
+	}
+
+	// Stale settings key: silently ignored, handoff still launches.
+	{
+		const runStale = await runExecutor(VALID_DOC, {
+			settings: { diaryReminder: true },
+		});
+		check(
+			"stale-key: handoff.diaryReminder in settings is ignored (launches, no warning/error notify)",
+			runStale.newSessionCalls === 1 &&
+				!runStale.notes.some(
+					(n) => n.level === "warning" || n.level === "error",
+				),
+			JSON.stringify({ notes: runStale.notes, launches: runStale.newSessionCalls }),
+		);
+	}
+
+	// Cross-run trigger contract: every /handoff complete carries the trigger.
+	check(
+		"trigger: /handoff completes all carry trigger 'handoff' (success, invalid doc, throw, cancel, Esc)",
+		(() => {
+			const completes = handoffCommandEmits.filter(
+				(e) => e.ch === "handoff_command_complete",
+			);
+			if (
+				completes.length === 0 ||
+				completes.some((e) => e.payload.trigger !== "handoff")
+			)
+				return false;
+			const errors = completes
+				.map((e) => e.payload.error as string | undefined)
+				.filter((x) => x !== undefined);
+			const hasError = (needle: string) =>
+				errors.some((x) => x.includes(needle));
+			return (
+				errors.includes("Cancelled") &&
+				hasError("## Next Task") &&
+				hasError("newSession exploded") &&
+				errors.includes("Session creation cancelled") &&
+				completes.some(
+					(e) =>
+						e.payload.sessionTitle !== undefined &&
+						e.payload.error === undefined,
+				)
+			);
+		})(),
+		JSON.stringify(
+			handoffCommandEmits.map((e) => ({
+				ch: e.ch,
+				trigger: e.payload.trigger,
+				error: e.payload.error,
+			})),
+		),
 	);
 }
 
@@ -1626,6 +1983,25 @@ console.log("continue tool:");
 		.execute("t1", { document: VALID_DOC }, undefined, undefined, toolCtx);
 	check("valid document → no isError", !ok.isError, JSON.stringify(ok));
 	check(
+		"tool-start: success emits one handoff_tool_start { goal, command, timestamp } after tui_filled_handoff",
+		(() => {
+			const starts = p.emitted.filter((e) => e.ch === "handoff_tool_start");
+			if (starts.length !== 1) return false;
+			const s = starts[0];
+			const keys = Object.keys(s.payload).sort().join(",");
+			const fillIdx = p.emitted.findIndex((e) => e.ch === "tui_filled_handoff");
+			const startIdx = p.emitted.findIndex((e) => e.ch === "handoff_tool_start");
+			return (
+				keys === "command,goal,timestamp" &&
+				s.payload.goal === VALID_TITLE &&
+				s.payload.command === "/continue" &&
+				typeof s.payload.timestamp === "number" &&
+				startIdx > fillIdx
+			);
+		})(),
+		JSON.stringify(p.emitted.map((e) => ({ ch: e.ch, payload: e.payload }))),
+	);
+	check(
 		"editor staged with BARE /continue",
 		toolEditorTexts.length === 1 && toolEditorTexts[0] === "/continue",
 		String(toolEditorTexts),
@@ -1710,6 +2086,9 @@ console.log("continue tool:");
 	const fillEventsBefore = p.emitted.filter(
 		(e) => e.ch === "tui_filled_handoff",
 	).length;
+	const toolStartsBefore = p.emitted.filter(
+		(e) => e.ch === "handoff_tool_start",
+	).length;
 	const bad = await runTool(INVALID_DOC);
 	check("invalid document → isError", bad.isError === true);
 	check(
@@ -1727,6 +2106,12 @@ console.log("continue tool:");
 		"failure paths stage nothing (fill-event count unchanged)",
 		p.emitted.filter((e) => e.ch === "tui_filled_handoff").length ===
 			fillEventsBefore,
+		JSON.stringify(p.emitted.map((e) => e.ch)),
+	);
+	check(
+		"tool-start: validation failures emit no handoff_tool_start",
+		p.emitted.filter((e) => e.ch === "handoff_tool_start").length ===
+			toolStartsBefore,
 		JSON.stringify(p.emitted.map((e) => e.ch)),
 	);
 }
@@ -1871,6 +2256,91 @@ console.log("lifecycle pairing:");
 			completes[0].payload.error === undefined &&
 			completes[0].payload.sessionTitle === VALID_TITLE,
 		JSON.stringify(p.emitted.map((e) => ({ ch: e.ch, payload: e.payload }))),
+	);
+	check(
+		"trigger: /continue start payload — trigger 'continue', no waitUntil key",
+		starts[0].payload.trigger === "continue" &&
+			!("waitUntil" in starts[0].payload),
+		JSON.stringify(starts[0].payload),
+	);
+}
+
+console.log("/continue trigger coverage (all exit paths)::");
+{
+	const handoffBranch = (doc: string) => [
+		{
+			id: "a1",
+			type: "message",
+			message: {
+				role: "assistant",
+				content: [
+					{
+						type: "toolCall",
+						id: "tc1",
+						name: "continue",
+						arguments: { document: doc },
+					},
+				],
+			},
+		},
+	];
+	const throwingNewSession = async () => {
+		throw new Error("continue smoke boom");
+	};
+	const perRunCompletes: number[] = [];
+	const allCommandEmits: Array<Array<{ ch: string; payload: any }>> = [];
+	const launch = async (
+		arg: string,
+		branch: unknown[] | undefined,
+		newSession: any,
+	) => {
+		const p = makeMockPi();
+		handoffExtension(p.pi);
+		await p.commands.get("continue").handler(
+			arg,
+			makeMockCtx({
+				sessionBranch: branch,
+				ui: { notify: () => {}, setEditorText: () => {} },
+				newSession,
+			}),
+		);
+		perRunCompletes.push(
+			p.emitted.filter((e) => e.ch === "handoff_command_complete").length,
+		);
+		allCommandEmits.push(
+			p.emitted.filter(
+				(e) =>
+					e.ch === "handoff_command_start" ||
+					e.ch === "handoff_command_complete",
+			),
+		);
+	};
+	// Bare (VALID_DOC recovery) × ok / cancelled / throw.
+	await launch("", handoffBranch(VALID_DOC), makeSessionCapture().newSession);
+	await launch(
+		"",
+		handoffBranch(VALID_DOC),
+		makeSessionCapture(true).newSession,
+	);
+	await launch("", handoffBranch(VALID_DOC), throwingNewSession);
+	// Generic text × ok / cancelled / throw.
+	await launch("next thing", undefined, makeSessionCapture().newSession);
+	await launch("next thing", undefined, makeSessionCapture(true).newSession);
+	await launch("next thing", undefined, throwingNewSession);
+	// Bare with an INVALID_DOC continue call (recovery validates late).
+	await launch("", handoffBranch(INVALID_DOC), makeSessionCapture().newSession);
+	check(
+		"trigger: /continue completes all carry trigger 'continue' (bare + text × ok/cancel/throw, invalid doc)",
+		perRunCompletes.length === 7 &&
+			perRunCompletes.every((n) => n >= 1) &&
+			allCommandEmits.every((emits) =>
+				emits.every((e) => e.payload.trigger === "continue"),
+			),
+		JSON.stringify(
+			allCommandEmits.map((emits) =>
+				emits.map((e) => ({ ch: e.ch, trigger: e.payload.trigger })),
+			),
+		),
 	);
 }
 
@@ -2537,7 +3007,7 @@ console.log("skipTools pre-serialization filter (D9):");
 		JSON.stringify(mutOut1),
 	);
 	check(
-		"diary-reminder nudge (user message) survives — user messages never dropped",
+		"nudge-style user message survives — user messages never dropped",
 		mutOut1.includes("[handoff preflight] A session handoff is starting."),
 		JSON.stringify(mutOut1),
 	);

@@ -1,9 +1,10 @@
 /**
  * Handoff execution application service.
  *
- * Orchestrates the detached `/handoff` flow: context gathering → memory
- * pre-flight → one-off LLM generation → in-memory validation → DIRECT launch
- * of the new session (no-doc rehaul, D12). No document file, no editor
+ * Orchestrates the detached `/handoff` flow: context gathering → pre-handoff
+ * hook wait (listeners' `waitUntil`) → one-off LLM generation → in-memory
+ * validation → DIRECT launch of the new session (no-doc rehaul, D12). No
+ * document file, no editor
  * review, no editor staging — the executor itself calls createHandoffSession
  * (command context: it holds newSession) with the same live-message shape
  * the `/continue` path composes: provenance line + PA-stripped document +
@@ -31,7 +32,6 @@ import { buildProvenanceLine } from "../domain/provenance";
 import type { GatheredContext } from "./context-gatherer";
 import { generateHandoffPrompt } from "./prompt-generator";
 import { gatherHandoffContext } from "./context-gatherer";
-import { maybeRunDiaryReminder } from "./diary-reminder";
 import { hasHandoffableConversation } from "../infrastructure/session-adapter";
 import { createHandoffSession } from "./session-creator";
 import {
@@ -42,6 +42,46 @@ import { HandoffLoader } from "../ui/handoff-loader";
 
 export interface HandoffCommandArgs {
 	rawArgs: string;
+}
+
+/** Options for {@link executeHandoff}. */
+export interface ExecuteHandoffOptions {
+	/** Test seam only — not a setting. */
+	hookWaitCapMs?: number;
+}
+
+/** Hard cap (ms) on the wait for listener-registered pre-handoff hooks. */
+const HOOK_WAIT_CAP_MS = 120_000;
+
+/**
+ * Wait for every listener-registered `waitUntil` promise, racing the settle
+ * against the cap timer and the loader's abort signal. Single outcome: the
+ * first of {settled, timeout, aborted} wins and tears the others down.
+ */
+function waitForHooks(
+	hooks: Promise<void>[],
+	capMs: number,
+	signal: AbortSignal,
+): Promise<"settled" | "timeout" | "aborted"> {
+	return new Promise((resolve) => {
+		if (signal.aborted) {
+			resolve("aborted");
+			return;
+		}
+		let finished = false;
+		let timer: ReturnType<typeof setTimeout> | undefined;
+		const done = (outcome: "settled" | "timeout" | "aborted") => {
+			if (finished) return;
+			finished = true;
+			if (timer !== undefined) clearTimeout(timer);
+			signal.removeEventListener("abort", onAbort);
+			resolve(outcome);
+		};
+		const onAbort = () => done("aborted");
+		timer = setTimeout(() => done("timeout"), capMs);
+		signal.addEventListener("abort", onAbort, { once: true });
+		Promise.allSettled(hooks).then(() => done("settled"));
+	});
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────
@@ -107,6 +147,7 @@ export async function executeHandoff(
 	ctx: ExtensionCommandContext,
 	args: HandoffCommandArgs,
 	settings: HandoffSettings | null,
+	options: ExecuteHandoffOptions = {},
 ): Promise<void> {
 	if (ctx.mode !== "tui") {
 		ctx.ui.notify("handoff requires interactive mode", "error");
@@ -119,24 +160,43 @@ export async function executeHandoff(
 	}
 
 	const goal = args.rawArgs || null;
-
-	emitCommandStart(pi, { goal, quickMode: false });
+	const capMs = options.hookWaitCapMs ?? HOOK_WAIT_CAP_MS;
 
 	// Cheap gate: only proceed when the session has a handoffable conversation
 	// (≥1 user/assistant message) — no full context build here. The full gather
-	// happens once, below, after the memory pre-flight.
+	// happens once, below, after the pre-handoff hook wait. A failed gate emits
+	// neither start nor complete.
 	if (!hasHandoffableConversation(ctx)) {
 		ctx.ui.notify("No conversation to hand off", "error");
-		emitCommandComplete(pi, {
-			goal,
-			quickMode: false,
-			error: "No conversation to hand off",
-		});
 		return;
 	}
 
-	// ONE continuous loader spanning memory pre-flight → snapshot → generation,
-	// so every phase (including the diary wait) is visible with live progress.
+	// Listeners register pre-handoff work via waitUntil — synchronously,
+	// during the emit (before their first await). Registration closes the
+	// moment emitCommandStart returns; later calls are ignored silently. The
+	// rejection handler attaches here so a rejected hook is never unhandled
+	// even if the wait starts later.
+	const hooks: Promise<void>[] = [];
+	let registrationOpen = true;
+	const waitUntil = (p: Promise<unknown>) => {
+		if (!registrationOpen) return;
+		try {
+			hooks.push(Promise.resolve(p).then(() => {}, () => {}));
+		} catch {
+			/* ignore */
+		}
+	};
+	emitCommandStart(pi, {
+		goal,
+		quickMode: false,
+		trigger: "handoff",
+		waitUntil,
+	});
+	registrationOpen = false;
+
+	// ONE continuous loader spanning the pre-handoff hook wait → snapshot →
+	// generation, so every phase (including the listener wait) is visible with
+	// live progress.
 	let gathered: GatheredContext | undefined;
 
 	const generated = await ctx.ui.custom<HandoffPromptResult>(
@@ -182,20 +242,24 @@ export async function executeHandoff(
 
 			const run = async (): Promise<HandoffPromptResult> => {
 				try {
-					// Nudge the agent to persist durable learnings to MemPalace before
-					// the handoff prompt is generated — while this session and its
-					// memory tools are still live. Best-effort: never blocks or breaks
-					// the handoff.
-					await maybeRunDiaryReminder(pi, ctx, settings, (status) =>
-						setPhase(status, true),
-					);
-					phaseTimed = false;
+					// Wait for listeners' registered pre-handoff work (capped). Best-
+					// effort: a hung hook is cut off at the cap, a rejection is
+					// ignored — the wait never breaks the handoff.
+					if (hooks.length > 0) {
+						setPhase("Waiting for pre-handoff hooks…", true);
+						const outcome = await waitForHooks(hooks, capMs, loader.signal);
+						phaseTimed = false;
+						if (outcome === "aborted") return { prompt: null };
+						if (outcome === "timeout")
+							ctx.ui.notify(
+								"Pre-handoff hooks did not finish in time — continuing handoff",
+								"info",
+							);
+					}
 
 					if (loader.signal.aborted) return { prompt: null };
 
-					// Re-gather so the handoff snapshot includes the diary turn and the
-					// leaf label lands on the true handoff point (the nudge appended
-					// entries).
+					// Re-gather so the snapshot includes whatever the hooks appended.
 					gathered = gatherHandoffContext(ctx);
 					const messageCount = gathered.context.messageCount;
 					const chars = formatK(gathered.context.conversationText.length);
@@ -250,6 +314,7 @@ export async function executeHandoff(
 		emitCommandComplete(pi, {
 			goal,
 			quickMode: false,
+			trigger: "handoff",
 			error: generated.error,
 		});
 		return;
@@ -266,7 +331,12 @@ export async function executeHandoff(
 				"error",
 			);
 		}
-		emitCommandComplete(pi, { goal, quickMode: false, error: msg });
+		emitCommandComplete(pi, {
+			goal,
+			quickMode: false,
+			trigger: "handoff",
+			error: msg,
+		});
 		return;
 	}
 
@@ -278,6 +348,7 @@ export async function executeHandoff(
 		emitCommandComplete(pi, {
 			goal,
 			quickMode: false,
+			trigger: "handoff",
 			error: "Context was not gathered",
 		});
 		return;
@@ -300,6 +371,7 @@ export async function executeHandoff(
 		emitCommandComplete(pi, {
 			goal,
 			quickMode: false,
+			trigger: "handoff",
 			error: 'Generated handoff has no "## Next Task" section',
 		});
 		return;
@@ -330,7 +402,12 @@ export async function executeHandoff(
 	// events.emit/ctx calls throw "stale ctx" (live-probed 2026-09-02).
 	// Cancel/error paths below emit after — safe, no replacement happened
 	// there.
-	emitCommandComplete(pi, { goal, quickMode: false, sessionTitle });
+	emitCommandComplete(pi, {
+		goal,
+		quickMode: false,
+		trigger: "handoff",
+		sessionTitle,
+	});
 
 	try {
 		const result = await createHandoffSession(
@@ -357,6 +434,7 @@ export async function executeHandoff(
 			emitCommandComplete(pi, {
 				goal,
 				quickMode: false,
+				trigger: "handoff",
 				error: "Session creation cancelled",
 			});
 		}
@@ -364,6 +442,11 @@ export async function executeHandoff(
 		// Rescue (b): session creation threw — same rescue surface.
 		const message = err instanceof Error ? err.message : String(err);
 		printHandoffFallback(ctx, liveMessage, message);
-		emitCommandComplete(pi, { goal, quickMode: false, error: message });
+		emitCommandComplete(pi, {
+			goal,
+			quickMode: false,
+			trigger: "handoff",
+			error: message,
+		});
 	}
 }

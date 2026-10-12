@@ -86,7 +86,11 @@ export function registerContinueCommand(pi: ExtensionAPI): void {
 					);
 					return;
 				}
-				emitCommandStart(pi, { goal: null, quickMode: true });
+				emitCommandStart(pi, {
+					goal: null,
+					quickMode: true,
+					trigger: "continue",
+				});
 				await launchHandoff(pi, ctx, document);
 				return;
 			}
@@ -118,6 +122,7 @@ async function launchHandoff(
 		emitCommandComplete(pi, {
 			goal: null,
 			quickMode: true,
+			trigger: "continue",
 			error: "Recovered handoff document is invalid",
 		});
 		return;
@@ -141,6 +146,7 @@ async function launchHandoff(
 	emitCommandComplete(pi, {
 		goal: null,
 		quickMode: true,
+		trigger: "continue",
 		sessionTitle,
 	});
 
@@ -165,6 +171,7 @@ async function launchHandoff(
 			emitCommandComplete(pi, {
 				goal: null,
 				quickMode: true,
+				trigger: "continue",
 				error: "Session creation cancelled",
 			});
 			return;
@@ -178,6 +185,7 @@ async function launchHandoff(
 		emitCommandComplete(pi, {
 			goal: null,
 			quickMode: true,
+			trigger: "continue",
 			error: message,
 		});
 	}
@@ -194,6 +202,7 @@ async function launchGeneric(
 	emitCommandComplete(pi, {
 		goal: null,
 		quickMode: true,
+		trigger: "continue",
 		sessionTitle,
 	});
 
@@ -217,6 +226,7 @@ async function launchGeneric(
 			emitCommandComplete(pi, {
 				goal: null,
 				quickMode: true,
+				trigger: "continue",
 				error: "Session creation cancelled",
 			});
 			return;
@@ -227,6 +237,7 @@ async function launchGeneric(
 		emitCommandComplete(pi, {
 			goal: null,
 			quickMode: true,
+			trigger: "continue",
 			error: message,
 		});
 	}

@@ -35,11 +35,18 @@ Design note: [../design/2026-10-07-pi-1.0-conformance.md](../design/2026-10-07-p
   reload, and session replacement (including the `/continue` launch itself)
   release `pendingAutoSubmit` + `pendingFlagTimer`, so a flag cannot cross
   into the successor runtime even if the module instance is reused.
-- **Residual risk:** a run that never settles within the 30s safety timeout
-  (e.g. a long compaction after the `continue` call) clears the flag and the
-  user presses Enter manually; this fails safe (no stray Enter). The 200ms
-  delayed `sendEnter` timer is not tracked, so a shutdown inside that 200ms
-  window still sends one Enter to the captured pane.
+- **Residual risk:** a run that never settles within the 180s safety timeout
+  (raised from 30s so a listener's diary followUp turn after `continue` fits:
+  a diary turn can take tens of seconds, and a flag that expires early is
+  fail-safe because the user presses Enter) — e.g. a long compaction after
+  the `continue` call — clears the flag and the user presses Enter manually;
+  this fails safe (no stray Enter). The 200ms delayed `sendEnter` timer is
+  not tracked, so a shutdown inside that 200ms window still sends one Enter
+  to the captured pane.
+
+Follow-up: an activity-refreshed TTL (re-arm the pending-flag timer on
+turn/tool activity while a run is active) is the robust replacement for the
+fixed 180s.
 
 Not closed: nothing here was observed in a live pane after the change. Close
 after one herdr warm-path handoff confirms a single Enter and no stray input.
