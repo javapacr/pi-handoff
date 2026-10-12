@@ -41,8 +41,11 @@ const AUTO_SUBMIT_DELAY_MS = 200;
  * Safety timeout (ms) to auto-clear the pending flag if agent_settled never
  * fires (e.g. agent crashed, user interrupted). Prevents a stale flag from
  * triggering on an unrelated future agent_settled.
+ *
+ * 180s, not 30s: a listener on `handoff_tool_start` may queue a followUp
+ * turn that runs before the run settles.
  */
-const PENDING_FLAG_TIMEOUT_MS = 30_000;
+const PENDING_FLAG_TIMEOUT_MS = 180_000;
 
 /**
  * Terminal context captured at tui_filled_handoff emit time. When non-null,

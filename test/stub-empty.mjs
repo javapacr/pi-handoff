@@ -9,6 +9,7 @@ export const streamSimple = async () => {
 export class CancellableLoader {
 	constructor(_tui, _spinnerColor, _textColor, label) {
 		this.label = label;
+		this.messages = [label];
 		this.onAbort = undefined;
 		this._controller = new AbortController();
 	}
@@ -17,8 +18,14 @@ export class CancellableLoader {
 	}
 	setMessage(text) {
 		this.label = text;
+		this.messages.push(text);
 	}
-	handleInput() {}
+	handleInput(data) {
+		if (data === "\x1b") {
+			this._controller.abort();
+			this.onAbort?.();
+		}
+	}
 	dispose() {}
 }
 export class Container {

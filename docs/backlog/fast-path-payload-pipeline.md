@@ -34,9 +34,9 @@ as target concepts; the two repos are the concrete implementations.
   entry names.
 - Gate + gather **walk the full branch twice** (`hasHandoffableConversation`
   `session-adapter.ts:141-152`, then `buildHandoffContext` `:154-173`).
-- Diary pre-flight **blocks gather** behind `waitForIdle()` up to 120 s
-  (`diary-reminder.ts:43`, `handoff-executor.ts:208-230`) — user-facing
-  latency before the LLM call even starts.
+- A listener hook (`waitUntil` on `handoff_command_start`) can hold gather up
+  to 120 s — user-facing latency before the LLM call starts, only when a
+  listener registers one.
 - Git context = **5 sequential `execSync` per repo** (`git-client.ts:45-54`),
   no parallelism, no caching.
 - No context caching between invocations; `cacheRetention` default `"short"`
@@ -72,10 +72,9 @@ as target concepts; the two repos are the concrete implementations.
   github.com/JMHSV/pi-compaction-model.
 
 **Flow quick wins** (no config surface): merge the cheap gate into gather
-(single branch walk); git execs → async + `Promise.all`; overlap the diary
-reminder with gather instead of gating gather behind its `waitForIdle()` (the
-two touch disjoint inputs); ship `cost.jsonl` ([cost-tracking-cost-jsonl.md](cost-tracking-cost-jsonl.md)) in the
-same change — it is the measurement harness for everything above.
+(single branch walk); git execs → async + `Promise.all`; ship `cost.jsonl`
+([cost-tracking-cost-jsonl.md](cost-tracking-cost-jsonl.md)) in the same
+change — it is the measurement harness for everything above.
 
 **Safety rails** (from ultra-compact): payload snapshot + extend the existing
 model-fallback loop to "retry with larger budget / active model"; circuit-break
