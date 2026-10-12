@@ -768,16 +768,21 @@ async function runExecutor(
 			},
 			custom: async (factory: any) =>
 				new Promise((resolve) => {
-					const comp = factory(
-						{ requestRender: () => {} },
-						{ fg: (_key: string, s: string) => s },
-						{},
-						(result: any) => resolve(result),
-					);
-					loaderComp = comp;
-					if (opts.escapeDuringWait) {
-						setImmediate(() => comp.handleInput("\x1b"));
-					}
+					// Defer the factory one macrotask: real pi mounts the loader on a
+					// later turn than the start emit, and a registration flag broken
+					// open must be visible to fixtures that register after the emit.
+					setImmediate(() => {
+						const comp = factory(
+							{ requestRender: () => {} },
+							{ fg: (_key: string, s: string) => s },
+							{},
+							(result: any) => resolve(result),
+						);
+						loaderComp = comp;
+						if (opts.escapeDuringWait) {
+							setImmediate(() => comp.handleInput("\x1b"));
+						}
+					});
 				}),
 		},
 	});
@@ -793,21 +798,19 @@ async function runExecutor(
 	// run's hook-wait cap (default 120_000) so the checks can prove "no timer
 	// left pending" / "no wait at all". Restored in finally (process-global).
 	const capMs = opts.hookWaitCapMs ?? 120_000;
-	const capTimers: Array<{
-		fired: boolean;
-		cleared: boolean;
-		handle: unknown;
-	}> = [];
+	const capTimers: Array<{ fired: boolean; cleared: boolean }> = [];
+	// Handle → record map, kept OUTSIDE the records: a live Node Timeout is a
+	// circular structure and would crash any JSON.stringify(capTimers) extra.
+	const capTimerByHandle = new Map<
+		unknown,
+		{ fired: boolean; cleared: boolean }
+	>();
 	const realSetTimeout = globalThis.setTimeout;
 	const realClearTimeout = globalThis.clearTimeout;
 	(globalThis as any).setTimeout = (cb: any, ms?: number, ...rest: any[]) => {
 		if (ms === capMs) {
-			const rec = {
-				fired: false,
-				cleared: false,
-				handle: undefined as unknown,
-			};
-			rec.handle = (realSetTimeout as any)(
+			const rec = { fired: false, cleared: false };
+			const handle = (realSetTimeout as any)(
 				() => {
 					rec.fired = true;
 					cb();
@@ -816,13 +819,14 @@ async function runExecutor(
 				...rest,
 			);
 			capTimers.push(rec);
-			return rec.handle;
+			capTimerByHandle.set(handle, rec);
+			return handle;
 		}
 		return (realSetTimeout as any)(cb, ms, ...rest);
 	};
 	(globalThis as any).clearTimeout = (handle: any, ...rest: any[]) => {
-		const rec = capTimers.find((t) => t.handle === handle && !t.fired);
-		if (rec) rec.cleared = true;
+		const rec = capTimerByHandle.get(handle);
+		if (rec && !rec.fired) rec.cleared = true;
 		return (realClearTimeout as any)(handle, ...rest);
 	};
 	let unhandledRejections = 0;
@@ -1456,15 +1460,18 @@ console.log("executor pre-handoff hook wait:");
 	);
 
 	// Late registration: waitUntil called after emit returned is ignored.
+	// Registers a never-resolving promise under a tight cap: a registration
+	// flag broken open would arm the wait and show up as a fired cap timer +
+	// cap info notify instead of a silent launch.
 	{
 		let lateThrew = false;
 		const runLate = await runExecutor(VALID_DOC, {
-			hookWaitCapMs: 5_000,
+			hookWaitCapMs: 25,
 			onCommandStart: (payload) => {
 				const late = payload.waitUntil;
 				queueMicrotask(() => {
 					try {
-						late(undefined);
+						late(new Promise(() => {}));
 					} catch {
 						lateThrew = true;
 					}
@@ -1475,11 +1482,17 @@ console.log("executor pre-handoff hook wait:");
 			"hook-wait late waitUntil → ignored without throwing, no wait, handoff launches",
 			!lateThrew &&
 				runLate.capTimers.length === 0 &&
-				runLate.newSessionCalls === 1,
+				runLate.newSessionCalls === 1 &&
+				!runLate.notes.some(
+					(n) =>
+						n.level === "info" &&
+						n.message.startsWith("Pre-handoff hooks did not finish"),
+				),
 			JSON.stringify({
 				lateThrew,
 				capTimers: runLate.capTimers,
 				launches: runLate.newSessionCalls,
+				notes: runLate.notes,
 			}),
 		);
 	}
@@ -2082,6 +2095,21 @@ console.log("continue tool:");
 			`${PLAIN_DOC}\n\n## Phase Adherence\nv\n\n## Afterword\nkept`,
 	);
 
+	// One emit per successful call, not just the first: the three PA-variant
+	// calls above also succeeded and must each have emitted one start.
+	const successToolCalls = [ok, paraphrased, noPa, midPa].filter(
+		(r) => !r.isError,
+	).length;
+	check(
+		"handoff_tool_start emitted exactly once per successful continue call (all success paths)",
+		p.emitted.filter((e) => e.ch === "handoff_tool_start").length ===
+			successToolCalls,
+		JSON.stringify({
+			toolStarts: p.emitted.filter((e) => e.ch === "handoff_tool_start").length,
+			successToolCalls,
+		}),
+	);
+
 	// Repair loop: invalid → isError naming the defect; absent/blank → isError.
 	const fillEventsBefore = p.emitted.filter(
 		(e) => e.ch === "tui_filled_handoff",
@@ -2265,7 +2293,7 @@ console.log("lifecycle pairing:");
 	);
 }
 
-console.log("/continue trigger coverage (all exit paths)::");
+console.log("/continue trigger coverage (all exit paths):");
 {
 	const handoffBranch = (doc: string) => [
 		{
@@ -2287,7 +2315,9 @@ console.log("/continue trigger coverage (all exit paths)::");
 	const throwingNewSession = async () => {
 		throw new Error("continue smoke boom");
 	};
-	const perRunCompletes: number[] = [];
+	const perRunCompletes: Array<
+		Array<{ error?: string; sessionTitle?: string }>
+	> = [];
 	const allCommandEmits: Array<Array<{ ch: string; payload: any }>> = [];
 	const launch = async (
 		arg: string,
@@ -2305,7 +2335,12 @@ console.log("/continue trigger coverage (all exit paths)::");
 			}),
 		);
 		perRunCompletes.push(
-			p.emitted.filter((e) => e.ch === "handoff_command_complete").length,
+			p.emitted
+				.filter((e) => e.ch === "handoff_command_complete")
+				.map((e) => ({
+					error: e.payload.error,
+					sessionTitle: e.payload.sessionTitle,
+				})),
 		);
 		allCommandEmits.push(
 			p.emitted.filter(
@@ -2329,18 +2364,42 @@ console.log("/continue trigger coverage (all exit paths)::");
 	await launch("next thing", undefined, throwingNewSession);
 	// Bare with an INVALID_DOC continue call (recovery validates late).
 	await launch("", handoffBranch(INVALID_DOC), makeSessionCapture().newSession);
+	// Expected exit path per run index (launch order above): ok → exactly one
+	// success-tagged complete; cancel → "Session creation cancelled"; throw →
+	// the newSession error message; invalid doc → the recovered-invalid error
+	// the command emits.
+	const expectedError: Array<string | undefined> = [
+		undefined,
+		"Session creation cancelled",
+		"continue smoke boom",
+		undefined,
+		"Session creation cancelled",
+		"continue smoke boom",
+		"Recovered handoff document is invalid",
+	];
+	const completesMatchExit = (
+		completes: Array<{ error?: string; sessionTitle?: string }>,
+		expected: string | undefined,
+	) =>
+		expected === undefined
+			? completes.length === 1 &&
+				completes[0].error === undefined &&
+				completes[0].sessionTitle !== undefined
+			: completes.some(
+					(c) =>
+						typeof c.error === "string" && c.error.includes(expected),
+				);
 	check(
 		"trigger: /continue completes all carry trigger 'continue' (bare + text × ok/cancel/throw, invalid doc)",
 		perRunCompletes.length === 7 &&
-			perRunCompletes.every((n) => n >= 1) &&
+			perRunCompletes.every((completes) => completes.length >= 1) &&
 			allCommandEmits.every((emits) =>
 				emits.every((e) => e.payload.trigger === "continue"),
+			) &&
+			perRunCompletes.every((completes, i) =>
+				completesMatchExit(completes, expectedError[i]),
 			),
-		JSON.stringify(
-			allCommandEmits.map((emits) =>
-				emits.map((e) => ({ ch: e.ch, trigger: e.payload.trigger })),
-			),
-		),
+		JSON.stringify({ perRunCompletes, expectedError }),
 	);
 }
 
