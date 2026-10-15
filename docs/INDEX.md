@@ -1,6 +1,6 @@
 # pi-handoff docs index
 
-Cursor: `main @ 46c2e83` — the repo state this index describes.
+Cursor: `main @ 838ac31` — the repo state this index describes.
 
 Usage, config, and architecture live in [`../README.md`](../README.md); the shipped skill is [`../skills/pi-handoff/SKILL.md`](../skills/pi-handoff/SKILL.md).
 
@@ -24,7 +24,7 @@ Usage, config, and architecture live in [`../README.md`](../README.md); the ship
 - [fast-path-payload-pipeline.md](backlog/fast-path-payload-pipeline.md) — tiered payload pipeline for fast detached generation.
 - [handoff-template-rehaul.md](backlog/handoff-template-rehaul.md) — agent-driven template-based generation rehaul.
 - [in-session-handoff-mode.md](backlog/in-session-handoff-mode.md) — `handoff.type: "in-session"` mode.
-- [pending-autosubmit-orphan.md](backlog/pending-autosubmit-orphan.md) — orphan `pendingAutoSubmit` stray Enter; reassessed after pi 1.0 conformance.
+- [pending-autosubmit-orphan.md](backlog/pending-autosubmit-orphan.md) — orphan `pendingAutoSubmit` stray Enter; reassessed after pi 1.0 conformance; pending-flag TTL raised to 180s (W1).
 - [pi-cache-window.md](backlog/pi-cache-window.md) — idle prompt-cache countdown + cold-resume advisor idea.
 - [pi-compact-extension.md](backlog/pi-compact-extension.md) — own compaction extension via `session_before_compact`.
 - [skip-tool-calls-serialization.md](backlog/skip-tool-calls-serialization.md) — skip-list for tool calls in session-JSONL parsing.
