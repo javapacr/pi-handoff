@@ -2399,7 +2399,16 @@ console.log("/continue trigger coverage (all exit paths):");
 			perRunCompletes.every((completes, i) =>
 				completesMatchExit(completes, expectedError[i]),
 			),
-		JSON.stringify({ perRunCompletes, expectedError }),
+		JSON.stringify({
+			// Events whose trigger is not 'continue', tagged with their run index.
+			offendingTriggers: allCommandEmits.flatMap((emits, run) =>
+				emits
+					.filter((e) => e.payload.trigger !== "continue")
+					.map((e) => ({ run, ch: e.ch, trigger: e.payload.trigger })),
+			),
+			perRunCompletes,
+			expectedError,
+		}),
 	);
 }
 
