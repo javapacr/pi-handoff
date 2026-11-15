@@ -142,7 +142,7 @@ names the target state).
 
 - No `nextState` keeps the current state — the right call when you hand off
   just to shed context.
-- "`nextState` is required whenever `## Next Task` names a different session state than the current one, and must match it; omit it to keep the current state — the parameter, not the document, decides keep vs route."
+- `nextState` is required whenever `## Next Task` names a different session state than the current one, and must match it; omit it to keep the current state — the parameter, not the document, decides keep vs route.
 - The `Session state: …` line under the provenance line is machine-written
   by the extension and states what was seeded. Do not write it.
 
