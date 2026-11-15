@@ -118,13 +118,13 @@ The output must:
 4. For each git repo involved (there may be multiple across different working directories), include the repo's working directory, branch, and key recent changes. Omit the Git State section entirely if no git repos were involved.
 5. Suggest skills the new session should invoke based on the work context
 6. State the next task clearly
-7. End with the ## Next Task section — this is extracted and sent as the live prompt to the new session, followed by a ## Phase Adherence section
+7. End with the ## Next Task section — this is extracted and sent as the live prompt to the new session
 
 Use exactly this output format — omit any section that has no content:
 
 ${HANDOFF_OUTPUT_TEMPLATE}
 
-IMPORTANT: Always end with ## Phase Adherence as the final section. Output only the prompt — no preamble, no "Here is the prompt:".`;
+IMPORTANT: End with ## Next Task; write nothing after it. Output only the prompt — no preamble, no "Here is the prompt:".`;
 }
 
 function buildUserPayload(opts: {

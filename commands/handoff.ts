@@ -20,7 +20,7 @@ export function registerHandoffCommandDetached(
 ): void {
 	pi.registerCommand("handoff", {
 		description:
-			"Transfer context to a new session: snapshot this conversation, generate the handoff with the configured model, and launch it. Goal optional.",
+			"Transfer context to a new session: snapshot this conversation, generate the handoff with the configured model, and launch it. Goal optional. With no goal the session state is kept; a goal or `--route` routes through classify, and `--keep-state` keeps it alongside a goal.",
 		handler: async (args, ctx: ExtensionCommandContext) => {
 			await executeHandoff(pi, ctx, { rawArgs: args.trim() }, settings);
 		},

@@ -79,6 +79,8 @@ const { extractDocumentFiles, documentDenyDirs } = await import(
 const { getGitContext } = await import(
 	join(repo, "infrastructure/git-client.ts")
 );
+const carryModule = await import(join(repo, "domain/session-state-carry.ts"));
+const { planCarry, parseHandoffArgs, replaySessionStates } = carryModule;
 const { executeHandoff } = await import(
 	join(repo, "application/handoff-executor.ts")
 );
@@ -92,12 +94,15 @@ function check(name: string, cond: boolean, extra?: unknown) {
 	}
 }
 
-const CANONICAL_PA =
-	"## Phase Adherence\nThis is a handoff from a previous session. Phase adherence as defined in the system prompt is mandatory — classify this request through CLASSIFICATION and follow the appropriate phase workflow. Do not skip phases.";
-
 /** Exact expected live first message — contract literal, independent of prod code. */
-function continuationPrompt(provenanceLine: string, document: string): string {
-	return `${provenanceLine}\n\n${document}\n\n${CANONICAL_PA}`;
+function continuationPrompt(
+	provenanceLine: string,
+	document: string,
+	stateLine: string | null = null,
+): string {
+	const header =
+		stateLine === null ? provenanceLine : `${provenanceLine}\n${stateLine}`;
+	return `${header}\n\n${document}`;
 }
 
 const VALID_DOC =
@@ -285,6 +290,7 @@ function makeSessionCapture(cancelSession = false) {
 		sessionInfo: [] as string[],
 		appended: [] as any[],
 		liveMessages: [] as string[],
+		customEntries: [] as Array<{ customType: string; data: unknown }>,
 		stale: false,
 	};
 	return {
@@ -295,6 +301,8 @@ function makeSessionCapture(cancelSession = false) {
 			await opts.setup?.({
 				appendSessionInfo: (t: string) => state.sessionInfo.push(t),
 				appendMessage: (m: any) => state.appended.push(m),
+				appendCustomEntry: (customType: string, data: unknown) =>
+					state.customEntries.push({ customType, data }),
 			});
 			await opts.withSession?.({
 				sendUserMessage: async (t: string) => state.liveMessages.push(t),
@@ -350,7 +358,7 @@ check(
 const LAUNCH_PROVENANCE =
 	"<!-- pi-handoff v2 | session: /s.jsonl | saved: 2026-09-13T00:00:00.000Z -->";
 check(
-	"live message = provenance line + document + canonical PA",
+	"live message = provenance line + document (no Phase Adherence appended)",
 	buildContinuationPrompt(LAUNCH_PROVENANCE, PLAIN_DOC) ===
 		continuationPrompt(LAUNCH_PROVENANCE, PLAIN_DOC),
 );
@@ -406,10 +414,9 @@ check(
 			HANDOFF_OUTPUT_TEMPLATE.indexOf("## Active Tasks"),
 );
 check(
-	"## Next Task + Phase Adherence stay last and byte-identical",
+	"## Next Task stays last and byte-identical",
 	HANDOFF_OUTPUT_TEMPLATE.endsWith(
-		"## Next Task\n[Clear, actionable statement of the goal for this new session]\n\n" +
-			CANONICAL_PA,
+		"## Next Task\n[Clear, actionable statement of the goal for this new session]",
 	),
 );
 check(
@@ -694,6 +701,8 @@ async function runExecutor(
 		onCommandStart?: (payload: any, order: string[]) => void;
 		/** Simulate Esc on the loader right after it mounts. */
 		escapeDuringWait?: boolean;
+		/** Raw `/handoff` args (default ""). */
+		rawArgs?: string;
 	} = {},
 ): Promise<ExecutorRun> {
 	const p = makeMockPi();
@@ -839,7 +848,7 @@ async function runExecutor(
 		await executeHandoff(
 			p.pi,
 			ctx,
-			{ rawArgs: "" },
+			{ rawArgs: opts.rawArgs ?? "" },
 			{ terminal: "tmux", ...opts.settings },
 			{ hookWaitCapMs: opts.hookWaitCapMs },
 		);
@@ -935,13 +944,13 @@ check(
 		JSON.stringify(live.slice(0, 120)),
 	);
 	check(
-		"live message = provenance + PA-stripped document + canonical PA (W1 shape)",
+		"live message = provenance + PA-stripped document, no Phase Adherence appended",
 		live === continuationPrompt(firstLine, STRIPPED_DOC),
 		JSON.stringify(live),
 	);
 	check(
-		"model-authored PA variant does not ride along; canonical PA is last",
-		!live.includes("model-authored variant") && live.endsWith(CANONICAL_PA),
+		"model-authored PA variant does not ride along; the document is last",
+		!live.includes("model-authored variant") && live.endsWith(STRIPPED_DOC),
 	);
 	check(
 		"origin entry carries details.document = provenance + stripped doc",
@@ -1128,7 +1137,7 @@ console.log("executor rescue (b): createHandoffSession throws:");
 		"throw → composed live message rescued to clipboard + stderr",
 		runThrow.clipboard.length === 1 &&
 			runThrow.clipboard[0].input?.includes(VALID_TASK) === true &&
-			runThrow.clipboard[0].input?.includes(CANONICAL_PA) === true &&
+			!runThrow.clipboard[0].input?.includes("Phase Adherence") &&
 			runThrow.clipboard[0].input?.startsWith("<!-- pi-handoff v") === true &&
 			runThrow.stderr.includes("HANDOFF TEXT"),
 		JSON.stringify({
@@ -1184,7 +1193,7 @@ console.log("executor rescue (c): newSession returns cancelled:");
 		"cancelled → composed live message rescued to clipboard + stderr",
 		runCancel.clipboard.length === 1 &&
 			runCancel.clipboard[0].input?.includes(VALID_TASK) === true &&
-			runCancel.clipboard[0].input?.endsWith(CANONICAL_PA) === true,
+			runCancel.clipboard[0].input?.endsWith(STRIPPED_DOC) === true,
 		JSON.stringify(runCancel.clipboard.map((c) => c.input?.slice(0, 60))),
 	);
 	check(
@@ -1657,13 +1666,13 @@ console.log("continue command — bare recovery:");
 		JSON.stringify(live.slice(0, 120)),
 	);
 	check(
-		"live message = provenance + PA-stripped document + canonical PA",
+		"live message = provenance + PA-stripped document, no Phase Adherence appended",
 		live === continuationPrompt(firstLine, STRIPPED_DOC),
 		JSON.stringify(live),
 	);
 	check(
-		"model-authored PA variant does not ride along; canonical PA is last",
-		!live.includes("model-authored variant") && live.endsWith(CANONICAL_PA),
+		"model-authored PA variant does not ride along; the document is last",
+		!live.includes("model-authored variant") && live.endsWith(STRIPPED_DOC),
 	);
 	check(
 		"findNextTaskContent on the live message still extracts the task",
@@ -3138,6 +3147,482 @@ console.log("skipTools pre-serialization filter (D9):");
 			messageCount: gathered.messageCount,
 			todos: gathered.todos,
 		}),
+	);
+}
+
+// ── W1: session-state carry (keep / route), stamp line, no canonical PA ──
+console.log("W1 session-state carry:");
+{
+	const fixture: any = JSON.parse(
+		readFileSync(join(repoRoot, "test/fixtures/session-states-v1.json"), "utf8"),
+	);
+	const scenarios = fixture.scenarios;
+	const asCustom = (seed: Array<{ customType: string; data: unknown }>) =>
+		seed.map((s) => ({ type: "custom", ...s }));
+	const userMsg = {
+		id: "u1",
+		type: "message",
+		message: { role: "user", content: "hi" },
+	};
+	const branchOf = (name: string) => [userMsg, ...scenarios[name].branch];
+	const json = JSON.stringify;
+	const handoffReq = (goal: string | null, override: "keep" | "route" | null) =>
+		({ via: "handoff", goal, override }) as const;
+	const kinds = (seed: Array<{ data: any }>) => seed.map((s) => s.data.kind);
+
+	const lineTwo = (live: string) => live.split("\n")[1] ?? "";
+	const STAMP_ROUTE = "Session state: not carried — route";
+	const STAMP_DRIFT = "Session state: not carried — unrecognized schema";
+
+	// ── golden fixture ──
+	check(
+		"[W1-golden] fixture upstreamRev pinned and regenerate note present",
+		fixture.upstreamRev === "515187bc0608f9d1f1c92bd90cb2e6865df4cb7e" &&
+			typeof fixture.regenerate === "string" &&
+			fixture.regenerate.length > 0,
+	);
+	const activeBuildBranch = scenarios["active-build"].branch;
+	const messageTypes = activeBuildBranch
+		.filter((e: any) => e.type === "custom_message")
+		.map((e: any) => e.customType);
+	check(
+		"[W1-golden] active-build holds entered/reminder/snapshot messages and replays ok",
+		["session-states:entered", "session-states:reminder", "session-states:snapshot"].every(
+			(t) => messageTypes.includes(t),
+		) && replaySessionStates(activeBuildBranch).kind === "ok",
+		json(messageTypes),
+	);
+	const pick = (st: any) => json({ m: st.mode, c: st.current, k: st.marks });
+	for (const name of ["active-build", "active-one", "off", "dormant", "unset"]) {
+		const r = replaySessionStates(scenarios[name].branch);
+		check(
+			`[W1-golden] replay ${name} matches upstream replayed`,
+			r.kind === "ok" && pick(r.state) === pick(scenarios[name].replayed),
+			json(r),
+		);
+	}
+	{
+		const r = replaySessionStates(scenarios["messages-only"].branch);
+		const up = scenarios["messages-only"].replayed;
+		check(
+			"[W1-golden] replay messages-only is absent (upstream: unset, no marks)",
+			r.kind === "absent" &&
+				up.mode === "unset" &&
+				up.current === null &&
+				json(up.marks) === "{}",
+		);
+	}
+	const SIX = ["active-build", "active-one", "off", "dormant", "unset", "messages-only"];
+	for (const name of SIX) {
+		const plan = planCarry(scenarios[name].branch, handoffReq(null, null));
+		check(
+			`[W1-golden] seed ${name} equals expectedSeed`,
+			json(plan.seed) === json(scenarios[name].expectedSeed),
+			json(plan.seed),
+		);
+	}
+	for (const name of ["active-build", "active-one", "off"]) {
+		const sc = scenarios[name];
+		const r = replaySessionStates(asCustom(sc.expectedSeed));
+		check(
+			`[W1-golden] round-trip ${name}`,
+			r.kind === "ok" &&
+				pick(r.state) === pick(sc.seedReplayed) &&
+				pick(r.state) === pick(sc.replayed),
+			json(r),
+		);
+	}
+	check(
+		"[W1-golden] isOwnMark preserved across the seed",
+		json(scenarios["active-build"].ownMarkIdsSeed) ===
+			json(scenarios["active-build"].ownMarkIdsBranch) &&
+			json(scenarios["active-build"].ownMarkIdsBranch) === json(["tests"]),
+	);
+	for (const name of ["drift-version", "drift-kind", "drift-mismatch", "drift-who"]) {
+		check(
+			`[W1-golden] drift ${name}`,
+			replaySessionStates(scenarios[name].branch).kind === "drift",
+		);
+	}
+
+	// ── dedupe + counted ──
+	const seedBuild = scenarios["active-build"].expectedSeed as any[];
+	const testsChecks = seedBuild.filter(
+		(e) => e.customType === "session-states:check" && e.data.id === "tests",
+	);
+	check(
+		"[W1-dedupe] one seeded tests check with ev2 and no who key",
+		testsChecks.length === 1 &&
+			testsChecks[0].data.evidence === "ev2" &&
+			!("who" in testsChecks[0].data),
+		json(testsChecks),
+	);
+	check(
+		"[W1-dedupe] seeded review check carries who user",
+		seedBuild.some((e) => e.data.id === "review" && e.data.who === "user"),
+	);
+	check(
+		"[W1-dedupe] stale classify scope check is not seeded",
+		!seedBuild.some((e) => e.data.state === "classify" || e.data.id === "scope"),
+	);
+	{
+		const noMsg = planCarry(scenarios["messages-only"].branch, handoffReq(null, null));
+		check(
+			"[W1-counted] messages-only → absent, no seed, no stamp",
+			noMsg.replay.kind === "absent" && noMsg.seed.length === 0 && noMsg.stampLine === null,
+		);
+		const withMsgs = planCarry(activeBuildBranch, handoffReq(null, null));
+		check(
+			"[W1-counted] active-build with custom_message entries is ok, not drift",
+			withMsgs.replay.kind === "ok",
+		);
+	}
+
+	// ── decision table (pure) ──
+	const decide = (req: any) => planCarry(branchOf("active-build"), req).decision;
+	{
+		const p = (raw: string) => parseHandoffArgs(raw) as any;
+		const dec = (raw: string) => {
+			const a = p(raw);
+			return decide(handoffReq(a.goal, a.override));
+		};
+		check("[W1-decide] /handoff (no goal) → keep", dec("") === "keep");
+		check("[W1-decide] /handoff <goal> → route", dec("fix it") === "route");
+		check("[W1-decide] /handoff --keep-state <goal> → keep", dec("--keep-state fix it") === "keep");
+		check("[W1-decide] /handoff --route → route", dec("--route") === "route");
+		check(
+			"[W1-decide] continue nextState absent → keep",
+			decide({ via: "continue", nextState: null }) === "keep",
+		);
+		check(
+			"[W1-decide] continue nextState = current → keep",
+			decide({ via: "continue", nextState: "build" }) === "keep",
+		);
+		check(
+			"[W1-decide] continue nextState other → route",
+			decide({ via: "continue", nextState: "prove" }) === "route",
+		);
+	}
+
+	// ── flags (pure) ──
+	{
+		const c = parseHandoffArgs("--keep-state --route x") as any;
+		check("[W1-flags] parse: both flags → conflict error", c.ok === false && c.error.includes("conflict"));
+		const g = parseHandoffArgs("fix --route") as any;
+		check("[W1-flags] parse: non-leading flag stays in the goal", g.ok && g.goal === "fix --route" && g.override === null);
+		const r = parseHandoffArgs("--route --route") as any;
+		check("[W1-flags] parse: repeated flag is one flag, goal null", r.ok && r.goal === null && r.override === "route");
+	}
+
+	// ── executor integration ──
+	const launch = (name: string | null, rawArgs: string, doc = VALID_DOC) =>
+		runExecutor(doc, { rawArgs, ...(name ? { branch: branchOf(name) } : {}) });
+	const startPayload = (r: ExecutorRun) =>
+		r.pi.emitted.find((e) => e.ch === "handoff_command_start")?.payload;
+	const liveOf = (r: ExecutorRun) => r.session.liveMessages[0] ?? "";
+	const provOf = (live: string) => live.split("\n", 1)[0];
+
+	const keepRun = await launch("active-build", "");
+	check(
+		"[W1-keep] seed entries equal fixture expectedSeed (no type key)",
+		json(keepRun.session.customEntries) === json(scenarios["active-build"].expectedSeed),
+		json(keepRun.session.customEntries),
+	);
+	check(
+		"[W1-keep] no nudge/window/dormant entries seeded",
+		!kinds(keepRun.session.customEntries as any).some((k) =>
+			["nudge", "window", "dormant"].includes(k),
+		),
+	);
+	{
+		const r = replaySessionStates(asCustom(keepRun.session.customEntries as any));
+		check(
+			"[W1-keep] seed replays active build with ev2/approved marks",
+			r.kind === "ok" &&
+				r.state.mode === "active" &&
+				r.state.current === "build" &&
+				json(r.state.marks) === json({ tests: "ev2", review: "approved" }),
+			json(r),
+		);
+	}
+	check(
+		"[W1-keep] live message line 2 is the kept stamp",
+		lineTwo(liveOf(keepRun)) === "Session state: kept build (2 marks carried)",
+		json(liveOf(keepRun).slice(0, 200)),
+	);
+	check(
+		"[W1-keep] origin audit document stays provenance + document (no stamp)",
+		keepRun.session.appended[0]?.details?.document ===
+			`${provOf(liveOf(keepRun))}\n\n${STRIPPED_DOC}`,
+	);
+
+	const routeGoalRun = await launch("active-build", "fix it");
+	const keepFlagRun = await launch("active-build", "--keep-state fix it");
+	const routeFlagRun = await launch("active-build", "--route");
+	check(
+		"[W1-decide] executor rawArgs \"\" keeps",
+		keepRun.session.customEntries.length === 3,
+	);
+	check(
+		"[W1-decide] executor rawArgs \"fix it\" routes",
+		routeGoalRun.session.customEntries.length === 0 && lineTwo(liveOf(routeGoalRun)) === STAMP_ROUTE,
+	);
+	check(
+		"[W1-decide] executor rawArgs \"--keep-state fix it\" keeps",
+		keepFlagRun.session.customEntries.length === 3 &&
+			startPayload(keepFlagRun)?.goal === "fix it",
+	);
+	check(
+		"[W1-decide] executor rawArgs \"--route\" routes",
+		routeFlagRun.session.customEntries.length === 0 && lineTwo(liveOf(routeFlagRun)) === STAMP_ROUTE,
+	);
+
+	// flags
+	const conflictRun = await launch("active-build", "--keep-state --route x");
+	check(
+		"[W1-flags] conflict → one error notify, no launch, no start/complete emit",
+		conflictRun.notes.length === 1 &&
+			conflictRun.notes[0].level === "error" &&
+			conflictRun.notes[0].message ===
+				"/handoff: --keep-state and --route conflict — pass one of them" &&
+			conflictRun.newSessionCalls === 0 &&
+			!conflictRun.pi.emitted.some((e) => e.ch.startsWith("handoff_command_")),
+		json(conflictRun.notes),
+	);
+	const trailingRoute = await launch("active-build", "fix --route");
+	check(
+		"[W1-flags] \"fix --route\" is a plain goal that routes",
+		startPayload(trailingRoute)?.goal === "fix --route" &&
+			trailingRoute.session.customEntries.length === 0 &&
+			lineTwo(liveOf(trailingRoute)) === STAMP_ROUTE,
+	);
+	const repeatRoute = await launch("active-build", "--route --route");
+	check(
+		"[W1-flags] \"--route --route\" routes with no goal block",
+		startPayload(repeatRoute)?.goal === null &&
+			!repeatRoute.registry.calls[0]?.context?.systemPrompt?.includes("focus on") &&
+			repeatRoute.session.customEntries.length === 0 &&
+			lineTwo(liveOf(repeatRoute)) === STAMP_ROUTE,
+	);
+
+	// goal propagation
+	{
+		const r = await launch("active-build", "--keep-state fix the parser");
+		const sys: string = r.registry.calls[0]?.context?.systemPrompt ?? "";
+		check(
+			"[W1-goal] system prompt carries the stripped goal and no flag",
+			sys.includes('focus on: "fix the parser"') && !sys.includes("--keep-state"),
+		);
+		check(
+			"[W1-goal] handoff_command_start goal is the stripped goal",
+			startPayload(r)?.goal === "fix the parser",
+		);
+		check("[W1-goal] session title is the stripped goal", r.session.sessionInfo[0] === "fix the parser");
+	}
+
+	// mode rules via the pure planner (keep and route alike)
+	for (const name of ["off", "dormant", "unset"]) {
+		for (const override of ["keep", "route"] as const) {
+			const plan = planCarry(scenarios[name].branch, handoffReq(null, override));
+			const expected = name === "off" ? scenarios.off.expectedSeed : [];
+			const ok =
+				json(plan.seed) === json(expected) &&
+				(name !== "off" ||
+					(() => {
+						const r = replaySessionStates(asCustom(plan.seed));
+						return r.kind === "ok" && r.state.mode === "off";
+					})());
+			check(`[W1-mode] ${name} ${override}`, ok, json(plan));
+		}
+	}
+	{
+		const plan = planCarry(branchOf("active-build"), handoffReq(null, null));
+		const transitions = plan.seed.filter((e: any) => e.customType === "session-states:transition");
+		check(
+			"[W1-mode] only the current state is seeded (transition.to = replayed current)",
+			plan.replay.kind === "ok" &&
+				transitions.length === 1 &&
+				(transitions[0].data as any).to === (plan.replay as any).state.current,
+		);
+	}
+
+	// stamp texts
+	{
+		const one = await launch("active-one", "");
+		check(
+			"[W1-stamp] kept build (1 mark carried)",
+			lineTwo(liveOf(one)) === "Session state: kept build (1 mark carried)",
+		);
+		check(
+			"[W1-stamp] kept build (2 marks carried)",
+			lineTwo(liveOf(keepRun)) === "Session state: kept build (2 marks carried)",
+		);
+		const off = await launch("off", "");
+		check("[W1-stamp] kept off", lineTwo(liveOf(off)) === "Session state: kept off");
+		check("[W1-stamp] not carried — route", lineTwo(liveOf(routeGoalRun)) === STAMP_ROUTE);
+		const dormant = await launch("dormant", "");
+		check(
+			"[W1-stamp] not carried — dormant",
+			lineTwo(liveOf(dormant)) === "Session state: not carried — dormant",
+		);
+		const unset = await launch("unset", "");
+		check(
+			"[W1-stamp] not carried — unset",
+			lineTwo(liveOf(unset)) === "Session state: not carried — unset",
+		);
+		const drift = await launch("drift-version", "");
+		check("[W1-stamp] not carried — unrecognized schema", lineTwo(liveOf(drift)) === STAMP_DRIFT);
+		const plain = await launch(null, "");
+		const plainLive = liveOf(plain);
+		check(
+			"[W1-stamp] no session-states entries → provenance + document only",
+			plainLive === continuationPrompt(provOf(plainLive), STRIPPED_DOC) &&
+				plain.session.customEntries.length === 0,
+		);
+		const messagesOnly = await launch("messages-only", "");
+		check(
+			"[W1-stamp] custom_message-only branch → no stamp line",
+			liveOf(messagesOnly) === continuationPrompt(provOf(liveOf(messagesOnly)), STRIPPED_DOC),
+		);
+	}
+
+	// drift never breaks the launch
+	for (const name of ["drift-version", "drift-kind", "drift-mismatch", "drift-who"]) {
+		const r = await launch(name, "");
+		check(
+			`[W1-drift] ${name}: launched once, nothing seeded, unrecognized-schema stamp`,
+			r.newSessionCalls === 1 &&
+				r.session.customEntries.length === 0 &&
+				lineTwo(liveOf(r)) === STAMP_DRIFT,
+			json(liveOf(r).slice(0, 200)),
+		);
+	}
+
+	// ── /continue paths ──
+	const toolCall = (id: string, args: Record<string, unknown>) => ({
+		id,
+		type: "message",
+		message: {
+			role: "assistant",
+			content: [{ type: "toolCall", id: `tc-${id}`, name: "continue", arguments: args }],
+		},
+	});
+	const runContinue = async (branch: unknown[], arg: string) => {
+		const p = makeMockPi();
+		process.env.PI_CODING_AGENT_DIR = scratchDir("pih-w1-continue-");
+		handoffExtension(p.pi);
+		const { state, newSession } = makeSessionCapture();
+		const ctx = makeMockCtx({
+			sessionBranch: branch,
+			ui: { notify: () => {}, setEditorText: () => {} },
+			newSession,
+		});
+		await p.commands.get("continue").handler(arg, ctx);
+		return state;
+	};
+	const fixtureBranch = branchOf("active-build");
+
+	{
+		const nextStateRun = await runContinue(
+			[...fixtureBranch, toolCall("a1", { document: VALID_DOC, nextState: "no-such-state" })],
+			"",
+		);
+		check(
+			"[W1-nextstate] unknown nextState routes: no seed, route-to stamp",
+			nextStateRun.customEntries.length === 0 &&
+				lineTwo(nextStateRun.liveMessages[0] ?? "") ===
+					"Session state: not carried — route to no-such-state",
+			json(nextStateRun.liveMessages),
+		);
+		const p = makeMockPi();
+		process.env.PI_CODING_AGENT_DIR = scratchDir("pih-w1-tool-");
+		handoffExtension(p.pi);
+		const staged: string[] = [];
+		const toolCtx = makeMockCtx({
+			ui: { notify: () => {}, setEditorText: (t: string) => staged.push(t) },
+		});
+		const res = await p.tools
+			.get("continue")
+			.execute("t1", { document: VALID_DOC, nextState: "" }, undefined, undefined, toolCtx);
+		check(
+			"[W1-nextstate] continue tool with blank nextState → isError, nothing staged",
+			res.isError === true && staged.length === 0,
+			json(res),
+		);
+		const good = await p.tools
+			.get("continue")
+			.execute("t2", { document: VALID_DOC, nextState: " prove " }, undefined, undefined, toolCtx);
+		check(
+			"[W1-nextstate] continue tool with a valid nextState stages and records it in details",
+			!good.isError && staged.length === 1 && good.details?.nextState === "prove",
+			json(good),
+		);
+
+		const olderWith = await runContinue(
+			[
+				...fixtureBranch,
+				toolCall("a1", { document: VALID_DOC, nextState: "prove" }),
+				toolCall("a2", { document: VALID_DOC }),
+			],
+			"",
+		);
+		check(
+			"[W1-recover] older nextState + newer call without → keep",
+			olderWith.customEntries.length === 3 &&
+				lineTwo(olderWith.liveMessages[0] ?? "") === "Session state: kept build (2 marks carried)",
+		);
+		const newerWith = await runContinue(
+			[
+				...fixtureBranch,
+				toolCall("a1", { document: VALID_DOC }),
+				toolCall("a2", { document: VALID_DOC, nextState: "prove" }),
+			],
+			"",
+		);
+		check(
+			"[W1-recover] older without + newer nextState prove → route to prove",
+			newerWith.customEntries.length === 0 &&
+				lineTwo(newerWith.liveMessages[0] ?? "") === "Session state: not carried — route to prove",
+		);
+		const sameState = await runContinue(
+			[...fixtureBranch, toolCall("a1", { document: VALID_DOC, nextState: "build" })],
+			"",
+		);
+		check(
+			"[W1-decide] continue nextState = current via /continue keeps",
+			sameState.customEntries.length === 3,
+		);
+		const offContinue = await runContinue(
+			[userMsg, ...scenarios.off.branch, toolCall("a1", { document: VALID_DOC, nextState: "prove" })],
+			"",
+		);
+		check(
+			"[W1-stamp] /continue route on an off session still carries off",
+			lineTwo(offContinue.liveMessages[0] ?? "") === "Session state: kept off" &&
+				offContinue.customEntries.length === 1,
+		);
+		const generic = await runContinue(fixtureBranch, "some text");
+		check(
+			"[W1-decide] /continue <text> seeds nothing and sends the text as-is",
+			generic.customEntries.length === 0 && generic.liveMessages[0] === "some text",
+			json(generic.liveMessages),
+		);
+	}
+
+	// ── Phase Adherence removal ──
+	check(
+		"[W1-pa] live message carries no Phase Adherence",
+		!liveOf(keepRun).includes("Phase Adherence") && !liveOf(keepRun).includes("CLASSIFICATION"),
+	);
+	check(
+		"[W1-pa] a legacy trailing Phase Adherence is still stripped",
+		stripTrailingPhaseAdherence(DOC_WITH_TRAILING_PA) === PLAIN_DOC,
+	);
+	check(
+		"[W1-pa] the template ends at ## Next Task",
+		HANDOFF_OUTPUT_TEMPLATE.lastIndexOf("\n## ") ===
+			HANDOFF_OUTPUT_TEMPLATE.lastIndexOf("\n## Next Task") &&
+			!HANDOFF_OUTPUT_TEMPLATE.includes("Phase Adherence"),
 	);
 }
 

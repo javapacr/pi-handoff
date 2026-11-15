@@ -9,8 +9,8 @@ You are handing this session's context to a NEW focused session. There is no
 handoff document file: you fill the template in memory and pass it to the
 `continue` tool inline. The tool stages `/continue`, and the new session's
 first message IS your filled document — the machine-stamped provenance line
-prepended by the extension, the canonical `## Phase Adherence` appended at
-launch.
+(and, under pi-session-states, one machine-written session-state line)
+prepended by the extension.
 
 ## Which entry point?
 
@@ -34,8 +34,9 @@ When the user asks for a handoff (or you propose one and they agree):
    directory, no path. The `## Document Files` section is self-computed (see
    below).
 2. **Call the `continue` tool** with
-   `{"document": "<the filled template, ## Context through ## Next Task>"}` —
-   the full text inline as one string. It validates the document and stages
+   `{"document": "<the filled template, ## Context through ## Next Task>"}`
+   (plus `nextState` when the next task is in a different session state, see
+   below) — the full text inline as one string. It validates the document and stages
    `/continue`. If it
    reports the document is invalid (missing or empty `## Next Task`), fix the
    document text and call it again with the full corrected document — the
@@ -50,11 +51,8 @@ including that context.
 
 ## Document contract
 
-Use EXACTLY this output format — omit any section that has no content. One
-deliberate exception: YOUR document ENDS at `## Next Task`. The `## Phase
-Adherence` section in the fence is written by the extension, not by you —
-the fence shows the complete template contract (the new session's first
-message as composed at launch), not the literal text you produce:
+Use EXACTLY this output format — omit any section that has no content. Your
+document ENDS at `## Next Task`:
 
 ```markdown
 ## Context
@@ -85,18 +83,12 @@ Invoke on start: skill-a, skill-b
 
 ## Next Task
 [Clear, actionable statement of the goal for this new session]
-
-## Phase Adherence
-This is a handoff from a previous session. Phase adherence as defined in the system prompt is mandatory — classify this request through CLASSIFICATION and follow the appropriate phase workflow. Do not skip phases.
 ```
 
 This block mirrors `HANDOFF_OUTPUT_TEMPLATE` in
 `domain/handoff-template.ts`; a smoke check enforces byte-equality between
 this fenced block and that constant — never edit one without the other. The
-detached `/handoff` system prompt embeds the same constant. The fence keeps
-the Phase Adherence section precisely because it is the TEMPLATE contract —
-the canonical copy the extension appends at launch — while your own output
-omits it.
+detached `/handoff` system prompt embeds the same constant.
 
 ### `## Document Files` — compute the list yourself
 
@@ -122,10 +114,6 @@ Non-negotiable rules:
   actual WORK to continue — never instructions about the handoff itself, never
   "verify the handoff", never meta-commentary. If a goal was given, the Next
   Task serves that goal.
-- **`## Phase Adherence` — OMIT it.** Write the document WITHOUT a Phase
-  Adherence section: the extension appends the canonical copy at launch and
-  strips any model-authored trailing variant, so a PA you write never
-  reaches the new session.
 - **Provenance header is machine-stamped.** The extension prepends the
   `<!-- pi-handoff … -->` line to the new session's first message — do NOT
   write that header; it is never model-authored.
@@ -142,8 +130,21 @@ Non-negotiable rules:
   the full corrected document.
 - **After success**: stop. Auto-submit (herdr/tmux) or the user's Enter runs
   `/continue`, which creates the new session — its first message is your
-  filled document, with the machine-stamped provenance line and the canonical
-  Phase Adherence.
+  filled document, with the machine-stamped provenance line and, when the
+  old session ran under pi-session-states, the session-state line.
+
+## Session state: keep or route
+
+When this session runs under pi-session-states, the handoff either keeps the
+current session state (the new session resumes in it with its done marks
+carried) or routes through classify (nothing is carried; your `## Next Task`
+names the target state).
+
+- No `nextState` keeps the current state — the right call when you hand off
+  just to shed context.
+- `nextState` is required whenever `## Next Task` names a different session state than the current one, and must match it; omit it to keep the current state — the parameter, not the document, decides keep vs route.
+- The `Session state: …` line under the provenance line is machine-written
+  by the extension and states what was seeded. Do not write it.
 
 ## `/continue [text]`
 

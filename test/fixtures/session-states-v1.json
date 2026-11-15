@@ -1,0 +1,570 @@
+{
+  "upstreamRev": "515187bc0608f9d1f1c92bd90cb2e6865df4cb7e",
+  "regenerate": "npx tsx scripts/capture-session-states-fixture.mjs ~/.pi/agent/git/github.com/javapacr/pi-session-states",
+  "scenarios": {
+    "active-build": {
+      "branch": [
+        {
+          "type": "custom",
+          "customType": "session-states:transition",
+          "data": {
+            "v": 1,
+            "kind": "transition",
+            "who": "agent",
+            "from": null,
+            "to": "classify"
+          }
+        },
+        {
+          "type": "custom",
+          "customType": "session-states:check",
+          "data": {
+            "v": 1,
+            "kind": "check",
+            "state": "classify",
+            "id": "scope",
+            "evidence": "c1"
+          }
+        },
+        {
+          "type": "custom_message",
+          "customType": "session-states:entered",
+          "content": "Entered session state: classify\n\n(body)",
+          "display": true,
+          "details": {
+            "to": "classify"
+          }
+        },
+        {
+          "type": "custom",
+          "customType": "session-states:transition",
+          "data": {
+            "v": 1,
+            "kind": "transition",
+            "who": "agent",
+            "from": "classify",
+            "to": "build"
+          }
+        },
+        {
+          "type": "custom_message",
+          "customType": "session-states:snapshot",
+          "content": "Session state: build (update)\n\n(body)",
+          "display": false,
+          "details": {
+            "mode": "active",
+            "state": "build"
+          }
+        },
+        {
+          "type": "custom",
+          "customType": "session-states:check",
+          "data": {
+            "v": 1,
+            "kind": "check",
+            "state": "build",
+            "id": "tests",
+            "evidence": "ev1",
+            "who": "flag"
+          }
+        },
+        {
+          "type": "custom",
+          "customType": "session-states:check",
+          "data": {
+            "v": 1,
+            "kind": "check",
+            "state": "build",
+            "id": "review",
+            "evidence": "approved",
+            "who": "user"
+          }
+        },
+        {
+          "type": "custom",
+          "customType": "session-states:check",
+          "data": {
+            "v": 1,
+            "kind": "check",
+            "state": "build",
+            "id": "tests",
+            "evidence": "ev2"
+          }
+        },
+        {
+          "type": "custom",
+          "customType": "session-states:check",
+          "data": {
+            "v": 1,
+            "kind": "check",
+            "state": "classify",
+            "id": "scope",
+            "evidence": "late"
+          }
+        },
+        {
+          "type": "custom",
+          "customType": "session-states:nudge",
+          "data": {
+            "v": 1,
+            "kind": "nudge",
+            "state": "build",
+            "unmet": [
+              "x"
+            ],
+            "count": 1
+          }
+        },
+        {
+          "type": "custom",
+          "customType": "session-states:window",
+          "data": {
+            "v": 1,
+            "kind": "window",
+            "run": 2
+          }
+        },
+        {
+          "type": "custom_message",
+          "customType": "session-states:reminder",
+          "content": "(reminder)",
+          "display": false
+        }
+      ],
+      "replayed": {
+        "mode": "active",
+        "current": "build",
+        "marks": {
+          "tests": "ev2",
+          "review": "approved"
+        },
+        "nudge": {
+          "unmet": [
+            "x"
+          ],
+          "count": 1
+        },
+        "windowRuns": 2
+      },
+      "expectedSeed": [
+        {
+          "customType": "session-states:transition",
+          "data": {
+            "v": 1,
+            "kind": "transition",
+            "who": "flag",
+            "from": null,
+            "to": "build"
+          }
+        },
+        {
+          "customType": "session-states:check",
+          "data": {
+            "v": 1,
+            "kind": "check",
+            "state": "build",
+            "id": "tests",
+            "evidence": "ev2"
+          }
+        },
+        {
+          "customType": "session-states:check",
+          "data": {
+            "v": 1,
+            "kind": "check",
+            "state": "build",
+            "id": "review",
+            "evidence": "approved",
+            "who": "user"
+          }
+        }
+      ],
+      "seedReplayed": {
+        "mode": "active",
+        "current": "build",
+        "marks": {
+          "tests": "ev2",
+          "review": "approved"
+        },
+        "nudge": null,
+        "windowRuns": 0
+      },
+      "ownMarkIdsBranch": [
+        "tests"
+      ],
+      "ownMarkIdsSeed": [
+        "tests"
+      ]
+    },
+    "active-one": {
+      "branch": [
+        {
+          "type": "custom",
+          "customType": "session-states:transition",
+          "data": {
+            "v": 1,
+            "kind": "transition",
+            "who": "flag",
+            "from": null,
+            "to": "build"
+          }
+        },
+        {
+          "type": "custom",
+          "customType": "session-states:check",
+          "data": {
+            "v": 1,
+            "kind": "check",
+            "state": "build",
+            "id": "tests",
+            "evidence": "ok"
+          }
+        }
+      ],
+      "replayed": {
+        "mode": "active",
+        "current": "build",
+        "marks": {
+          "tests": "ok"
+        },
+        "nudge": null,
+        "windowRuns": 0
+      },
+      "expectedSeed": [
+        {
+          "customType": "session-states:transition",
+          "data": {
+            "v": 1,
+            "kind": "transition",
+            "who": "flag",
+            "from": null,
+            "to": "build"
+          }
+        },
+        {
+          "customType": "session-states:check",
+          "data": {
+            "v": 1,
+            "kind": "check",
+            "state": "build",
+            "id": "tests",
+            "evidence": "ok"
+          }
+        }
+      ],
+      "seedReplayed": {
+        "mode": "active",
+        "current": "build",
+        "marks": {
+          "tests": "ok"
+        },
+        "nudge": null,
+        "windowRuns": 0
+      },
+      "ownMarkIdsBranch": [
+        "tests"
+      ],
+      "ownMarkIdsSeed": [
+        "tests"
+      ]
+    },
+    "off": {
+      "branch": [
+        {
+          "type": "custom",
+          "customType": "session-states:transition",
+          "data": {
+            "v": 1,
+            "kind": "transition",
+            "who": "agent",
+            "from": null,
+            "to": "build"
+          }
+        },
+        {
+          "type": "custom",
+          "customType": "session-states:check",
+          "data": {
+            "v": 1,
+            "kind": "check",
+            "state": "build",
+            "id": "tests",
+            "evidence": "ev1"
+          }
+        },
+        {
+          "type": "custom",
+          "customType": "session-states:off",
+          "data": {
+            "v": 1,
+            "kind": "off"
+          }
+        }
+      ],
+      "replayed": {
+        "mode": "off",
+        "current": null,
+        "marks": {},
+        "nudge": null,
+        "windowRuns": 0
+      },
+      "expectedSeed": [
+        {
+          "customType": "session-states:off",
+          "data": {
+            "v": 1,
+            "kind": "off"
+          }
+        }
+      ],
+      "seedReplayed": {
+        "mode": "off",
+        "current": null,
+        "marks": {},
+        "nudge": null,
+        "windowRuns": 0
+      }
+    },
+    "dormant": {
+      "branch": [
+        {
+          "type": "custom",
+          "customType": "session-states:window",
+          "data": {
+            "v": 1,
+            "kind": "window",
+            "run": 3
+          }
+        },
+        {
+          "type": "custom",
+          "customType": "session-states:dormant",
+          "data": {
+            "v": 1,
+            "kind": "dormant",
+            "reason": "window-expired"
+          }
+        }
+      ],
+      "replayed": {
+        "mode": "dormant",
+        "current": null,
+        "marks": {},
+        "nudge": null,
+        "windowRuns": 3
+      },
+      "expectedSeed": [],
+      "seedReplayed": {
+        "mode": "unset",
+        "current": null,
+        "marks": {},
+        "nudge": null,
+        "windowRuns": 0
+      }
+    },
+    "unset": {
+      "branch": [
+        {
+          "type": "custom",
+          "customType": "session-states:window",
+          "data": {
+            "v": 1,
+            "kind": "window",
+            "run": 1
+          }
+        }
+      ],
+      "replayed": {
+        "mode": "unset",
+        "current": null,
+        "marks": {},
+        "nudge": null,
+        "windowRuns": 1
+      },
+      "expectedSeed": [],
+      "seedReplayed": {
+        "mode": "unset",
+        "current": null,
+        "marks": {},
+        "nudge": null,
+        "windowRuns": 0
+      }
+    },
+    "messages-only": {
+      "branch": [
+        {
+          "type": "custom_message",
+          "customType": "session-states:entered",
+          "content": "Entered session state: build\n\n(body)",
+          "display": true,
+          "details": {
+            "to": "build"
+          }
+        },
+        {
+          "type": "custom_message",
+          "customType": "session-states:reminder",
+          "content": "(reminder)",
+          "display": false
+        },
+        {
+          "type": "custom_message",
+          "customType": "session-states:snapshot",
+          "content": "Session state: build (update)\n\n(body)",
+          "display": false,
+          "details": {
+            "mode": "active",
+            "state": "build"
+          }
+        }
+      ],
+      "replayed": {
+        "mode": "unset",
+        "current": null,
+        "marks": {},
+        "nudge": null,
+        "windowRuns": 0
+      },
+      "expectedSeed": [],
+      "seedReplayed": {
+        "mode": "unset",
+        "current": null,
+        "marks": {},
+        "nudge": null,
+        "windowRuns": 0
+      }
+    },
+    "drift-version": {
+      "branch": [
+        {
+          "type": "custom",
+          "customType": "session-states:transition",
+          "data": {
+            "v": 1,
+            "kind": "transition",
+            "who": "agent",
+            "from": null,
+            "to": "build"
+          }
+        },
+        {
+          "type": "custom",
+          "customType": "session-states:check",
+          "data": {
+            "v": 2,
+            "kind": "check",
+            "state": "build",
+            "id": "tests",
+            "evidence": "e"
+          }
+        }
+      ],
+      "replayed": {
+        "mode": "active",
+        "current": "build",
+        "marks": {},
+        "nudge": null,
+        "windowRuns": 0
+      }
+    },
+    "drift-kind": {
+      "branch": [
+        {
+          "type": "custom",
+          "customType": "session-states:transition",
+          "data": {
+            "v": 1,
+            "kind": "transition",
+            "who": "agent",
+            "from": null,
+            "to": "build"
+          }
+        },
+        {
+          "type": "custom",
+          "customType": "session-states:pause",
+          "data": {
+            "v": 1,
+            "kind": "pause"
+          }
+        }
+      ],
+      "replayed": {
+        "mode": "active",
+        "current": "build",
+        "marks": {},
+        "nudge": null,
+        "windowRuns": 0
+      }
+    },
+    "drift-mismatch": {
+      "branch": [
+        {
+          "type": "custom",
+          "customType": "session-states:transition",
+          "data": {
+            "v": 1,
+            "kind": "transition",
+            "who": "agent",
+            "from": null,
+            "to": "build"
+          }
+        },
+        {
+          "type": "custom",
+          "customType": "session-states:check",
+          "data": {
+            "v": 1,
+            "kind": "transition",
+            "who": "agent",
+            "from": "build",
+            "to": "build"
+          }
+        }
+      ],
+      "replayed": {
+        "mode": "active",
+        "current": "build",
+        "marks": {},
+        "nudge": null,
+        "windowRuns": 0
+      }
+    },
+    "drift-who": {
+      "branch": [
+        {
+          "type": "custom",
+          "customType": "session-states:transition",
+          "data": {
+            "v": 1,
+            "kind": "transition",
+            "who": "agent",
+            "from": null,
+            "to": "build"
+          }
+        },
+        {
+          "type": "custom",
+          "customType": "session-states:check",
+          "data": {
+            "v": 1,
+            "kind": "check",
+            "state": "build",
+            "id": "tests",
+            "evidence": "e",
+            "who": "robot"
+          }
+        }
+      ],
+      "replayed": {
+        "mode": "active",
+        "current": "build",
+        "marks": {
+          "tests": "e"
+        },
+        "nudge": null,
+        "windowRuns": 0
+      }
+    }
+  }
+}

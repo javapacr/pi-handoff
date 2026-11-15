@@ -5,8 +5,9 @@
  *
  * 1. `/continue` (no argument) — handoff launch: recovers the handoff
  *    document from the NEWEST `continue` toolCall in this session's branch
- *    (`arguments.document` — the tool call itself is the stash, so recovery
- *    works after restarts) and creates the new session from it. This is the
+ *    (`arguments.document` and optional `arguments.nextState` — the tool call
+ *    itself is the stash, so recovery works after restarts) and creates the
+ *    new session from it, keeping or routing the session state. This is the
  *    path the `continue` tool stages, and the manual recovery when
  *    auto-submit missed.
  * 2. `/continue <text>` — generic: the text is sent AS-IS as the new
@@ -29,6 +30,7 @@ import {
 	stripTrailingPhaseAdherence,
 } from "../domain/handoff-prompt";
 import { buildProvenanceLine } from "../domain/provenance";
+import { planCarry } from "../domain/session-state-carry";
 import { createHandoffSession } from "../application/session-creator";
 import {
 	emitCommandComplete,
@@ -39,15 +41,18 @@ import {
  * Newest assistant `continue` toolCall carrying a string
  * `arguments.document` (D10: the tool call is the document stash — it rides
  * the session branch/JSONL). Scanned newest-first; the LAST matching call
- * within the newest matching message wins (repair loops call again).
+ * within the newest matching message wins (repair loops call again). The
+ * `nextState` comes from that same call, `null` when absent or blank.
  */
-function recoverHandoffDocument(branch: SessionEntry[]): string | undefined {
+function recoverHandoff(
+	branch: SessionEntry[],
+): { document: string; nextState: string | null } | undefined {
 	for (let i = branch.length - 1; i >= 0; i--) {
 		const entry = branch[i];
 		if (entry.type !== "message" || entry.message.role !== "assistant") continue;
 		const content = entry.message.content;
 		if (!Array.isArray(content)) continue;
-		let document: string | undefined;
+		let recovered: { document: string; nextState: string | null } | undefined;
 		for (const block of content) {
 			if (
 				typeof block === "object" &&
@@ -56,10 +61,17 @@ function recoverHandoffDocument(branch: SessionEntry[]): string | undefined {
 				block.name === "continue" &&
 				typeof block.arguments.document === "string"
 			) {
-				document = block.arguments.document;
+				const nextState = block.arguments.nextState;
+				recovered = {
+					document: block.arguments.document,
+					nextState:
+						typeof nextState === "string" && nextState.trim().length > 0
+							? nextState
+							: null,
+				};
 			}
 		}
-		if (document !== undefined) return document;
+		if (recovered !== undefined) return recovered;
 	}
 	return undefined;
 }
@@ -78,8 +90,8 @@ export function registerContinueCommand(pi: ExtensionAPI): void {
 
 			// Bare → recover the handoff document staged by the `continue` tool.
 			if (!raw) {
-				const document = recoverHandoffDocument(ctx.sessionManager.getBranch());
-				if (document === undefined) {
+				const recovered = recoverHandoff(ctx.sessionManager.getBranch());
+				if (recovered === undefined) {
 					ctx.ui.notify(
 						"No handoff document in this session — re-run the handoff",
 						"error",
@@ -91,7 +103,7 @@ export function registerContinueCommand(pi: ExtensionAPI): void {
 					quickMode: true,
 					trigger: "continue",
 				});
-				await launchHandoff(pi, ctx, document);
+				await launchHandoff(pi, ctx, recovered.document, recovered.nextState);
 				return;
 			}
 
@@ -102,14 +114,15 @@ export function registerContinueCommand(pi: ExtensionAPI): void {
 	});
 }
 
-/** Handoff mode: live message = provenance line + PA-stripped document + canonical PA. */
+/** Handoff mode: live message = provenance line + state line (when any) + document. */
 async function launchHandoff(
 	pi: ExtensionAPI,
 	ctx: ExtensionCommandContext,
 	recoveredDocument: string,
+	nextState: string | null,
 ): Promise<void> {
 	// Idempotent strip: arguments.document is the raw staging input and may
-	// still carry a model-authored trailing Phase Adherence even though the
+	// still carry a legacy trailing Phase Adherence even though the
 	// tool normalized its own copy.
 	const document = stripTrailingPhaseAdherence(recoveredDocument);
 
@@ -136,7 +149,16 @@ async function launchHandoff(
 	);
 	// Non-null: `task` (checked above) is the same Next Task section this call
 	// re-derives from the same document, so the null arm is unreachable here.
-	const liveMessage = buildContinuationPrompt(provenanceLine, document)!;
+	// The plan reads the branch at launch time, not at tool-call time.
+	const carryPlan = planCarry(ctx.sessionManager.getBranch(), {
+		via: "continue",
+		nextState,
+	});
+	const liveMessage = buildContinuationPrompt(
+		provenanceLine,
+		document,
+		carryPlan.stampLine,
+	)!;
 	const sessionTitle = deriveSessionTitle(null, task);
 
 	// Emit the completion BEFORE creating the session — once
@@ -163,6 +185,7 @@ async function launchHandoff(
 				sessionTitle,
 				liveMessage,
 				document: `${provenanceLine}\n\n${document}`,
+				sessionStateSeed: carryPlan.seed,
 			},
 		);
 
