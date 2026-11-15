@@ -7,8 +7,8 @@
  * document file, no editor
  * review, no editor staging — the executor itself calls createHandoffSession
  * (command context: it holds newSession) with the same live-message shape
- * the `/continue` path composes: provenance line + PA-stripped document +
- * canonical Phase Adherence.
+ * the `/continue` path composes: provenance line + optional session-state
+ * line + document (a legacy trailing Phase Adherence stripped).
  *
  * Every post-generation failure mode (invalid `## Next Task`, session
  * creation throwing, session creation cancelled) routes through the
@@ -29,6 +29,7 @@ import {
 	stripTrailingPhaseAdherence,
 } from "../domain/handoff-prompt";
 import { buildProvenanceLine } from "../domain/provenance";
+import { parseHandoffArgs } from "../domain/session-state-carry";
 import type { GatheredContext } from "./context-gatherer";
 import { generateHandoffPrompt } from "./prompt-generator";
 import { gatherHandoffContext } from "./context-gatherer";
@@ -159,7 +160,14 @@ export async function executeHandoff(
 		return;
 	}
 
-	const goal = args.rawArgs || null;
+	// Flags are parsed before anything is emitted so a conflict launches
+	// nothing and the start event carries the stripped goal.
+	const parsed = parseHandoffArgs(args.rawArgs);
+	if (!parsed.ok) {
+		ctx.ui.notify(parsed.error, "error");
+		return;
+	}
+	const { goal, override } = parsed;
 	const capMs = options.hookWaitCapMs ?? HOOK_WAIT_CAP_MS;
 
 	// Cheap gate: only proceed when the session has a handoffable conversation
@@ -260,7 +268,11 @@ export async function executeHandoff(
 					if (loader.signal.aborted) return { prompt: null };
 
 					// Re-gather so the snapshot includes whatever the hooks appended.
-					gathered = gatherHandoffContext(ctx);
+					gathered = gatherHandoffContext(ctx, {
+						via: "handoff",
+						goal,
+						override,
+					});
 					const messageCount = gathered.context.messageCount;
 					const chars = formatK(gathered.context.conversationText.length);
 					setPhase(
@@ -354,7 +366,7 @@ export async function executeHandoff(
 		return;
 	}
 
-	// Normalize + validate in memory (D12): strip a model-authored trailing
+	// Normalize + validate in memory (D12): strip a legacy trailing
 	// Phase Adherence, require a non-empty `## Next Task`. Nothing is saved
 	// and no editor is shown — the document itself becomes the new session's
 	// live first message.
@@ -380,14 +392,18 @@ export async function executeHandoff(
 	const sessionTitle = deriveSessionTitle(goal, task);
 
 	// Same live-message shape as the `/continue` launch path (D11): the
-	// provenance line prepended, the PA-stripped document, the canonical
-	// Phase Adherence appended — as ONE visible first message.
+	// provenance line, the session-state line when one exists, then the
+	// document — as ONE visible first message.
 	const provenanceLine = buildProvenanceLine(
 		ctx.sessionManager.getSessionFile(),
 	);
 	// Non-null: `task` (checked above) is derived from the same document this
 	// call re-validates internally.
-	const liveMessage = buildContinuationPrompt(provenanceLine, document)!;
+	const liveMessage = buildContinuationPrompt(
+		provenanceLine,
+		document,
+		gathered.carryPlan?.stampLine ?? null,
+	)!;
 
 	const stats: string[] = [];
 	if (generated.modelId) stats.push(`generated with ${generated.modelId}`);
@@ -424,12 +440,13 @@ export async function executeHandoff(
 				// Same durable audit-trail payload as the `/continue` launch:
 				// provenance line + stripped body in the hidden entry's details.
 				document: `${provenanceLine}\n\n${document}`,
+				sessionStateSeed: gathered.carryPlan?.seed ?? [],
 			},
 		);
 
 		if (result === "cancelled") {
 			// Rescue (c): no session was created — the composed launch message
-			// (provenance + document + canonical PA) goes to clipboard + stderr.
+			// (provenance + state line + document) goes to clipboard + stderr.
 			printHandoffFallback(ctx, liveMessage, "new session was cancelled");
 			emitCommandComplete(pi, {
 				goal,

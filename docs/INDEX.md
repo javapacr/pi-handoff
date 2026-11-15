@@ -13,6 +13,7 @@ Usage, config, and architecture live in [`../README.md`](../README.md); the ship
 - [2026-09-13-template-unification.md](design/2026-09-13-template-unification.md) — template unification: three backlog items, one handoff-document contract.
 - [2026-09-13-no-doc-rehaul.md](design/2026-09-13-no-doc-rehaul.md) — no-doc rehaul: warm path passes the filled template inline, cold path launches directly.
 - [2026-10-07-pi-1.0-conformance.md](design/2026-10-07-pi-1.0-conformance.md) — pi 1.0 conformance: typebox peer, `agent_settled` auto-submit, shutdown cleanup, `continue` exposure/annotations, dev pins.
+- [2026-11-16-handoff-session-state-carry.md](design/2026-11-16-handoff-session-state-carry.md) — handoff keeps the session state unless routed (`--keep-state`/`--route`/`nextState`), stamp line, no closing Phase Adherence.
 
 ## docs/backlog/
 

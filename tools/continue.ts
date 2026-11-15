@@ -5,11 +5,12 @@
  * The FINAL step of the handoff: the agent calls it with the complete filled
  * handoff template as the `document` argument — full text inline, nothing on
  * disk. The tool validates the document (non-empty `## Next Task` section),
- * normalizes it (strips a trailing `## Phase Adherence` — the canonical copy
- * is appended exactly once at launch), and stages bare `/continue` in the TUI
- * editor. The tool call itself is the document stash: `arguments.document` is
- * durably in the session branch/JSONL the moment the tool executes, and bare
- * `/continue` recovers it at launch.
+ * normalizes it (strips a legacy trailing PA section), and stages bare
+ * `/continue` in the TUI editor. The tool call itself is the document stash:
+ * `arguments.document` and the optional `arguments.nextState` are durably in
+ * the session branch/JSONL the moment the tool executes, and bare `/continue`
+ * recovers both at launch: `nextState` absent or equal to the current session
+ * state keeps it, another name routes through classify.
  *
  * The tool does NOT create the session (newSession is command-context-only)
  * and writes NOTHING to the filesystem. On validation failure it returns an
@@ -37,9 +38,14 @@ export interface ContinueDetails {
 	suggestedCommand?: string;
 	/** Provenance line computed at staging time — `/continue` recomputes its own at launch. */
 	provenanceLine?: string;
-	/** The normalized (PA-stripped) document that will seed the new session. */
+	/** The normalized (legacy-PA-stripped) document that will seed the new session. */
 	document?: string;
+	/** The requested next session state, when one was given. */
+	nextState?: string;
 }
+
+const NEXT_STATE_GUIDELINE =
+	"`nextState` is required whenever `## Next Task` names a different session state than the current one, and must match it; omit it to keep the current state — the parameter, not the document, decides keep vs route.";
 
 function errorResult(text: string, document?: string) {
 	return {
@@ -79,6 +85,7 @@ export function registerContinueTool(pi: ExtensionAPI): void {
 		promptGuidelines: [
 			"Call continue with the complete filled handoff template as the document argument (full text inline, no file).",
 			"If the tool reports the document is invalid, fix the document text and call it again with the full corrected document.",
+			NEXT_STATE_GUIDELINE,
 			"After a successful continue call, stop — /continue is filled in the TUI; the user (or auto-submit) confirms it.",
 		],
 		parameters: {
@@ -89,12 +96,16 @@ export function registerContinueTool(pi: ExtensionAPI): void {
 					description:
 						"The complete filled handoff template, full text inline (per the pi-handoff skill's document contract).",
 				},
+				nextState: {
+					type: "string",
+					description: NEXT_STATE_GUIDELINE,
+				},
 			},
 			required: ["document"],
 		} as any,
 		async execute(
 			_toolCallId,
-			params: { document?: string },
+			params: { document?: string; nextState?: unknown },
 			_signal,
 			_onUpdate,
 			ctx: ExtensionContext,
@@ -109,6 +120,21 @@ export function registerContinueTool(pi: ExtensionAPI): void {
 				);
 			}
 
+			const rawNextState = params.nextState;
+			if (
+				rawNextState !== undefined &&
+				(typeof rawNextState !== "string" || rawNextState.trim().length === 0)
+			) {
+				return errorResult(
+					`Invalid nextState: it must be a non-blank string naming the ` +
+						`session state the new session should route to. Call continue ` +
+						`again with a valid nextState, or omit it to keep the current ` +
+						`state.`,
+					rawDocument,
+				);
+			}
+			const nextState = rawNextState?.trim();
+
 			const task = findNextTaskContent(rawDocument);
 			if (task === null) {
 				return errorResult(
@@ -116,15 +142,13 @@ export function registerContinueTool(pi: ExtensionAPI): void {
 						`\`## Next Task\` section. Fix the DOCUMENT text so it contains ` +
 						`a \`## Next Task\` heading followed by the actual work for the ` +
 						`new session, then call continue again with the full corrected ` +
-						`document. Write the document WITHOUT a \`## Phase Adherence\` ` +
-						`section — the extension appends the canonical copy at launch.`,
+						`document.`,
 					rawDocument,
 				);
 			}
 
-			// Normalize: the canonical Phase Adherence is appended exactly once
-			// at launch — a model-authored trailing variant must not ride along
-			// in the body. In-memory only; arguments.document keeps the raw text
+			// Normalize: a legacy trailing PA section must not ride
+			// along in the body. In-memory only; arguments.document keeps the raw text
 			// and /continue strips again (idempotent) at recovery.
 			const document = stripTrailingPhaseAdherence(rawDocument);
 
@@ -171,6 +195,7 @@ export function registerContinueTool(pi: ExtensionAPI): void {
 					suggestedCommand: command,
 					provenanceLine,
 					document,
+					nextState,
 				} satisfies ContinueDetails,
 			};
 		},

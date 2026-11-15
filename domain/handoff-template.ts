@@ -39,17 +39,8 @@ export const HANDOFF_CRITICAL_RULES = `CRITICAL RULES:
 3. Include a Suggested Skills section recommending skills the new agent should invoke based on the work context and task type.`;
 
 /**
- * Canonical Phase Adherence section — appended by the `continue` tool to the
- * Next Task payload to form the new session's live first message. The
- * extension owns this text so model-authored variants (which may carry
- * arbitrary directives) never leak into the next session's opening prompt.
- */
-export const HANDOFF_PHASE_ADHERENCE = `## Phase Adherence
-This is a handoff from a previous session. Phase adherence as defined in the system prompt is mandatory — classify this request through CLASSIFICATION and follow the appropriate phase workflow. Do not skip phases.`;
-
-/**
- * The exact output format — from `## Context` through the `## Phase Adherence`
- * paragraph. Sections before this in each mode's prompt provide the framing;
+ * The exact output format — from `## Context` through the `## Next Task`
+ * section. Sections before this in each mode's prompt provide the framing;
  * the IMPORTANT footer differs per mode (detached: stdout discipline,
  * in-session: file content discipline).
  */
@@ -80,6 +71,4 @@ Invoke on start: skill-a, skill-b
 /path/to/project
 
 ## Next Task
-[Clear, actionable statement of the goal for this new session]
-
-${HANDOFF_PHASE_ADHERENCE}`;
+[Clear, actionable statement of the goal for this new session]`;

@@ -5,8 +5,9 @@
  * commands/continue.ts (`/continue`: the bare handoff recovery and the
  * generic text form) and application/handoff-executor.ts (the cold-path
  * direct launch). The live first message IS the handoff document —
- * provenance line + full PA-stripped body + canonical Phase Adherence
- * composed by `buildContinuationPrompt` (no-doc rehaul, D11).
+ * provenance line + optional session-state line + full body (a legacy
+ * trailing Phase Adherence stripped) composed by `buildContinuationPrompt`
+ * (no-doc rehaul, D11).
  *
  * Handles: labeling the old session's leaf, recording the handoff origin
  * (including the full document in `details` — never serialized to the LLM),
@@ -47,16 +48,22 @@ export async function createHandoffSession(
 		sessionTitle: string;
 		liveMessage: string;
 		/**
-		 * Full PA-stripped handoff document with its provenance line — recorded
+		 * Full handoff document with its provenance line — recorded
 		 * in the hidden `handoff-origin` entry's `details` as the durable audit
 		 * trail. `details` is never serialized to the LLM (only `content`
 		 * becomes a user message), so the document rides exactly once — in the
 		 * visible live message. Omitted for generic (`/continue <text>`) launches.
 		 */
 		document?: string;
+		/**
+		 * Session-state entries (`{customType, data}`, as planned by
+		 * domain/session-state-carry.ts) appended to the new session after the
+		 * `handoff-origin` message. Appended as given; nothing is decided here.
+		 */
+		sessionStateSeed?: readonly { customType: string; data: unknown }[];
 	},
 ): Promise<"ok" | "cancelled"> {
-	const { goal, sessionTitle, liveMessage, document } = opts;
+	const { goal, sessionTitle, liveMessage, document, sessionStateSeed } = opts;
 	const currentSessionFile = session.currentSessionFile;
 
 	// Label the handoff point in the OLD session
@@ -90,6 +97,10 @@ export async function createHandoffSession(
 				} satisfies HandoffOriginData,
 				timestamp: Date.now(),
 			});
+
+			for (const entry of sessionStateSeed ?? []) {
+				sm.appendCustomEntry(entry.customType, entry.data);
+			}
 		},
 
 		withSession: async (replacementCtx) => {

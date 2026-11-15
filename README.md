@@ -14,7 +14,7 @@ Context handoff for the [pi coding agent](https://github.com/earendil-works/pi) 
 | Lifecycle events | Emits `handoff_command_start`, `handoff_command_complete` and `handoff_tool_start` on the event bus; `/handoff` waits (capped at 120s) on promises listeners register via `waitUntil` — see [Lifecycle events](#lifecycle-events). |
 | Failure fallback | If the handoff cannot launch (invalid `## Next Task`, session creation cancelled), the generated handoff text is copied to the clipboard and printed to stderr so nothing paid-for is lost. |
 | Anchor repo support | When the workspace isn't a git repo itself but contains sub-directory git repos, gathers git state from each sub-repo individually. |
-| No-doc handoff flow | Neither path writes a document file — the filled template is injected directly as the new session's first message (provenance line + template + canonical Phase Adherence). The warm path's `continue` toolCall itself is the durable stash; the cold path launches straight from the executor. If a launch fails, the generated text is rescued to clipboard + stderr. |
+| No-doc handoff flow | Neither path writes a document file — the filled template is injected directly as the new session's first message (provenance line + optional session-state line + template; no canonical Phase Adherence is appended). The warm path's `continue` toolCall itself is the durable stash; the cold path launches straight from the executor. If a launch fails, the generated text is rescued to clipboard + stderr. |
 | Sensitive info redaction | Instructs the LLM to redact API keys, passwords, tokens, and PII with `[REDACTED]` placeholders. |
 | Document-file tracking | The handoff template's `## Document Files` section lists document files (`.md`/`.txt`/`.rst`/`.adoc`) created or edited in the session — union of git status (`--untracked-files=all`, catches subagent and manual edits) and the session's write/edit calls, with `in-session`/`git-only` provenance. Code files stay out: git context already carries working-tree state. |
 | Previous-session linkage | Every handoff carries a machine-computed provenance line (`<!-- pi-handoff v2 \| session: … \| saved: … -->`) and the new session receives a hidden `handoff-origin` entry recording the parent session JSONL path, profile, and the full document — so the next session can consult the original transcript when the doc alone is not enough. The `↩ Continued from previous session` notify surfaces the linkage at session start. |
@@ -95,11 +95,14 @@ Add to your pi profile's `package.json`:
 ## Usage
 
 ```text
-/handoff                      Hand off to a new session via a one-off LLM call that directly launches the successor
-/handoff fix the auth bug     Generate the handoff with a specific goal for the next session
+/handoff [--keep-state|--route] [goal]
+/handoff                      Hand off to a new session via a one-off LLM call that directly launches the successor (keeps the session state)
+/handoff fix the auth bug     Generate the handoff with a specific goal for the next session (routes through classify)
+/handoff --keep-state <goal>  Goal, but keep the session state
+/handoff --route              No goal, but route through classify
 ```
 
-Both entry points are always available, and both end in the same tail: the new session is seeded **directly** with the filled template — provenance line + document + canonical Phase Adherence as the first message. No document file is ever created.
+Both entry points are always available, and both end in the same tail: the new session is seeded **directly** with the filled template — provenance line + document as the first message, with a `Session state: …` line under the provenance line when the old session ran under pi-session-states; no canonical Phase Adherence is appended. No document file is ever created.
 
 - **Cold session — `/handoff [goal]`**: snapshots the conversation and generates the document in a **one-off LLM call** on `handoff.provider`/`model`/`effort`, then directly launches the new session. If `## Next Task` is missing or the launch fails, the generated text is rescued to clipboard + stderr.
 - **Warm/active session — just ask for a handoff in natural language**: the agent follows the shipped `pi-handoff` skill — it fills the document template and calls the `continue` tool with the full text inline; the tool validates, strips the trailing Phase Adherence section, stages bare `/continue`, and the existing herdr/tmux auto-submit fires it on turn end (no manual Enter needed). The `/continue` command recovers the newest `continue(document)` toolCall from the session branch — restart-safe, and also the manual recovery path (type `/continue`).
@@ -154,7 +157,7 @@ All `handoff` settings are read once at extension startup — changing any of th
 
 ### The unified flow (two entry points, one tail)
 
-Both entry points produce the same result — a new session whose first message **is** the filled handoff template (preceded by a machine-computed provenance line, followed by the canonical Phase Adherence). Nothing is written to disk.
+Both entry points produce the same result — a new session whose first message **is** the filled handoff template (preceded by a machine-computed provenance line and, under pi-session-states, a session-state line; no canonical Phase Adherence is appended). Nothing is written to disk.
 
 ```
 $AGENT_DIR/data/pi-handoff/handoff-<timestamp>.md
@@ -163,7 +166,7 @@ $AGENT_DIR/data/pi-handoff/handoff-<timestamp>.md
 (`$AGENT_DIR` is `PI_CODING_AGENT_DIR`, default `~/.pi/agent`; the file name uses an ISO-8601 timestamp with colons/dots as dashes so `/continue`'s newest-doc lookup stays correct.)
 
 - **Cold session: `/handoff [goal]`** — snapshots the conversation and generates the document in a **one-off LLM call** on `handoff.provider`/`model`/`effort`, so a cold prefix never costs a premium-model turn, then **directly launches** the successor session (the command context is the only holder of session-creation authority). If `## Next Task` is missing or the launch fails/cancels, the generated text is rescued to clipboard + stderr.
-- **Warm/active session: just ask for a handoff** — the agent follows the shipped **pi-handoff skill**, the primary instruction source (flow, document contract, exact output template, `continue` usage). It fills the template — the session's own model already has the history in its prompt cache — then calls the **`continue`** tool with `{"document": …}` (the full text inline; the toolCall itself is the durable stash in the session JSONL). The tool validates (a non-empty `## Next Task`; on failure it reports what to repair and the agent fixes the text — a self-healing loop), strips the trailing Phase Adherence section, computes the provenance line, and stages bare `/continue`; herdr/tmux auto-submit once the agent run settles (`agent_settled`, not `agent_end`) and the new session starts with the document inline.
+- **Warm/active session: just ask for a handoff** — the agent follows the shipped **pi-handoff skill**, the primary instruction source (flow, document contract, exact output template, `continue` usage). It fills the template — the session's own model already has the history in its prompt cache — then calls the **`continue`** tool with `{"document": …}` (the full text inline; the toolCall itself is the durable stash in the session JSONL). The tool validates (a non-empty `## Next Task`; on failure it reports what to repair and the agent fixes the text — a self-healing loop), strips a legacy trailing Phase Adherence section, computes the provenance line, and stages bare `/continue` (an optional `nextState` argument rides the same toolCall and decides keep vs route); herdr/tmux auto-submit once the agent run settles (`agent_settled`, not `agent_end`) and the new session starts with the document inline.
 
 The `/handoff` executor launches the new session itself (direct `createHandoffSession`); the warm path's `continue` tool cannot (session creation is command-context-only in pi) — that is why it stages `/continue`, which owns the launch on that path. The hidden `handoff-origin` entry (leaf label, parent session, profile, full document) is written by the shared `createHandoffSession` for both paths.
 
@@ -171,7 +174,25 @@ Notes:
 
 - `handoff.type` is deprecated: parsed for backward compatibility, ignored. All three surfaces (`/handoff`, `/continue`, `continue`) register in every session.
 - `/continue` is general-purpose: an existing file path seeds it as read-first handoff context; ANY OTHER TEXT is sent to a new session as-is (no handoff machinery); no argument uses the newest `handoff-*.md` (manual recovery when auto-submit missed).
-- The handoff document is NOT pre-loaded into the new session (docs can be large) — the new session's single visible first message carries the document path plus a read-first instruction, the document's `## Next Task`, and the canonical `## Phase Adherence` owned by the extension (model-authored variants never leak into the new session's first message).
+- The handoff document is NOT pre-loaded into the new session (docs can be large) — the new session's single visible first message carries the provenance line, the optional session-state line and the document itself; no canonical Phase Adherence is appended, and a legacy trailing `## Phase Adherence` in a document is stripped.
+
+### Session state: keep or route
+
+When the old session runs under [pi-session-states](https://github.com/javapacr/pi-session-states), a handoff either **keeps** its session state or **routes** through classify:
+
+| Launch | Result |
+| --- | --- |
+| `/handoff` (no goal) | keep: the new session resumes in the same state with its done marks and evidence |
+| `/handoff <goal>` | route: nothing is seeded; the document's `## Next Task` names the target state |
+| `/handoff --keep-state <goal>` | keep |
+| `/handoff --route` | route (next task inferred as for a no-goal handoff) |
+| `continue` tool, `nextState` absent or equal to the current state | keep |
+| `continue` tool, `nextState` naming another state | route |
+| `/continue <text>` | nothing seeded, no state line |
+
+Only leading exact `--keep-state` / `--route` tokens are flags; everything after them is the goal. Passing both refuses the launch. `nextState` is not checked against any state list (pi-handoff loads no state config). Nudge, window and dormant history never carries; an `off` session hands off as `off`; `dormant`/`unset` sessions seed nothing; entries pi-handoff cannot recognize are not carried at all.
+
+The first message's second line states what was seeded: `Session state: kept build (2 marks carried)`, `kept off`, `not carried — route`, `not carried — route to <state>`, `not carried — dormant`, `not carried — unset` or `not carried — unrecognized schema`. It reports what pi-handoff seeded, not what took effect. Design note: [docs/design/2026-11-16-handoff-session-state-carry.md](docs/design/2026-11-16-handoff-session-state-carry.md).
 
 ### Lifecycle events
 
@@ -193,7 +214,7 @@ The payload carries a function, so it is not serializable: listeners run in-proc
 
 ## Testing
 
-`npm test` runs a behavioral smoke suite (211 checks). It stages the repo's TypeScript tree into a temp ESM context, stubs the `@earendil-works/*` runtime packages through node module hooks (repo devDep versions drift from pi's runtime aliases), loads the staged extension, and asserts: identical registration across settings shapes, the `/handoff` executor directly launching the successor (no save, no editor, no staging) with rescue-to-clipboard on every failure mode, registry-routed generation with `cacheRetention: "none"` and intact auth-by-construction, the continue tool's inline-document validate/repair loop + bare-`/continue` staging, branch-based bare-`/continue` recovery (newest-wins, restart-safe), the single-message continuation prompt (provenance + document + canonical Phase Adherence exactly once), lifecycle event pairing + the `↩ Continued` origin-entry notify, template/skill byte-sync, document-file extraction (git `--untracked-files=all` + tool-log union), the `handoff.skipTools` filter (matcher, defaults incl. `continue`, override/disable/malformed, clone-before-mutate), and the **zero-filesystem-writes invariant** across both flows (agent dir + repo + tmpdir snapshots).
+`npm test` runs a behavioral smoke suite (294 checks). It stages the repo's TypeScript tree into a temp ESM context, stubs the `@earendil-works/*` runtime packages through node module hooks (repo devDep versions drift from pi's runtime aliases), loads the staged extension, and asserts: identical registration across settings shapes, the `/handoff` executor directly launching the successor (no save, no editor, no staging) with rescue-to-clipboard on every failure mode, registry-routed generation with `cacheRetention: "none"` and intact auth-by-construction, the continue tool's inline-document validate/repair loop + bare-`/continue` staging, branch-based bare-`/continue` recovery (newest-wins, restart-safe), the single-message continuation prompt (provenance + optional session-state line + document, no Phase Adherence appended), the session-state carry (golden fixture captured from upstream pi-session-states, keep/route decision table, stamp lines, drift fail-closed), lifecycle event pairing + the `↩ Continued` origin-entry notify, template/skill byte-sync, document-file extraction (git `--untracked-files=all` + tool-log union), the `handoff.skipTools` filter (matcher, defaults incl. `continue`, override/disable/malformed, clone-before-mutate), and the **zero-filesystem-writes invariant** across both flows (agent dir + repo + tmpdir snapshots).
 
 ## License
 
